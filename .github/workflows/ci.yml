@@ -9,6 +9,29 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+
+    # The database integration tests assert on real PostgreSQL behaviour
+    # (trigger-enforced immutability, native enum types, NOT NULL). They
+    # skip when no server is reachable, so without this service they would
+    # silently stop covering the guarantees they exist to protect.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: argus
+          POSTGRES_PASSWORD: argus_local_dev
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ARGUS_TEST_DATABASE_URL: postgresql+psycopg://argus:argus_local_dev@127.0.0.1:5432/postgres
+
     steps:
       - uses: actions/checkout@v4
 

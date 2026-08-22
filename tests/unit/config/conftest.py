@@ -3,6 +3,7 @@
 import os
 
 import pytest
+
 from packages.config.settings import get_config
 
 REQUIRED_DB_ENV = {

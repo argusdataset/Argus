@@ -1,6 +1,7 @@
 """Tests for the secrets-resolution seam."""
 
 import pytest
+
 from packages.config.secrets import DotEnvSecretsProvider, SecretNotFoundError, get_secrets_provider
 from packages.config.settings import get_config
 

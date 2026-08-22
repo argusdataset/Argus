@@ -1,9 +1,10 @@
 """Tests for the Environment enum and AppConfig's environment field."""
 
 import pytest
+from pydantic import ValidationError
+
 from packages.config.environment import Environment
 from packages.config.settings import AppConfig
-from pydantic import ValidationError
 
 
 def test_defaults_to_development(required_db_env):

@@ -14,6 +14,9 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
     "python-dotenv>=1.0",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +32,7 @@ dev = [
 # be revisited once core/ and data/ pick up the heavier dependencies
 # (pandas/numpy/scikit-learn) with versions worth pinning.
 [tool.setuptools.packages.find]
-include = ["core*", "services*", "data*", "packages*"]
+include = ["core*", "services*", "data*", "packages*", "infra*"]
 
 [tool.ruff]
 line-length = 100
@@ -50,6 +53,9 @@ select = [
 ignore = [
     "E501", # line length is handled by the formatter
 ]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "data", "infra", "packages", "services", "tests"]
 
 [tool.ruff.format]
 quote-style = "double"

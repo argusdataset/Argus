@@ -1,8 +1,9 @@
 """Tests for AppConfig loading, validation, grouping, and secret-safety."""
 
 import pytest
-from packages.config.settings import AppConfig, DatabaseSettings, ProvidersSettings, get_config
 from pydantic import ValidationError
+
+from packages.config.settings import AppConfig, DatabaseSettings, ProvidersSettings, get_config
 
 
 def test_missing_database_group_entirely_raises_naming_it():
