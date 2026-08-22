@@ -1,0 +1,1 @@
+"""Named target model definitions."""

@@ -1,0 +1,1 @@
+"""Feature schema definitions."""

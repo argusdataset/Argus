@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argus"
+version = "0.1.0"
+description = "ARGUS — financial intelligence system for US equities (repository skeleton)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "ARGUS" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+    "pre-commit>=3.7",
+]
+
+# Package manager choice: plain pip + PEP 621 pyproject.toml (not Poetry).
+# At this stage there are no runtime dependencies and no published packages —
+# Poetry's lockfile/resolver machinery buys nothing yet. Plain pip keeps the
+# skeleton simple; this can be revisited once core/ and data/ pick up real
+# dependencies (pandas/numpy/scikit-learn) with versions worth pinning.
+[tool.setuptools.packages.find]
+include = ["core*", "services*", "data*", "packages*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["core", "services", "data", "packages", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501", # line length is handled by the formatter
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

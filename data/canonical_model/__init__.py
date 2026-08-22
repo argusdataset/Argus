@@ -1,0 +1,1 @@
+"""Canonical schema and validation."""

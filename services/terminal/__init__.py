@@ -1,0 +1,1 @@
+"""Fundamentals/news terminal service."""
