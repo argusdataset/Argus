@@ -33,9 +33,9 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from core.data_validation.engine import select_latest_as_of
 from core.data_validation.result import AsOfResult, MissReason
 from data.canonical_model.records import CanonicalStatementType
 from infra.db.schema.canonical import canonical_fundamentals
@@ -85,21 +85,19 @@ def get_fundamental_as_of(
     every restatement of that period — never the first filed, never
     whatever the current value happens to be, always what was actually
     knowable on `as_of`. This is the query the adversarial leakage test
-    in `tests/unit/data_validation/test_pit_enforcement.py` exercises
-    directly.
+    in `tests/integration/data_validation/test_pit_enforcement.py`
+    exercises directly.
     """
-    query = (
-        select(canonical_fundamentals)
-        .where(
-            canonical_fundamentals.c.security_id == security_id,
-            canonical_fundamentals.c.statement_type == statement_type.value,
-            canonical_fundamentals.c.fiscal_period_end == fiscal_period_end,
-            canonical_fundamentals.c.availability_time <= as_of,
-        )
-        .order_by(canonical_fundamentals.c.availability_time.desc())
-        .limit(1)
+    row = select_latest_as_of(
+        connection,
+        canonical_fundamentals,
+        key={
+            "security_id": security_id,
+            "statement_type": statement_type.value,
+            "fiscal_period_end": fiscal_period_end,
+        },
+        as_of=as_of,
     )
-    row = connection.execute(query).first()
     if row is None:
         return AsOfResult.miss(MissReason.NOT_YET_AVAILABLE, as_of=as_of)
     return _row_to_result(row, as_of)
@@ -115,28 +113,32 @@ def get_latest_fundamental_as_of(
 
     The query feature engineering actually needs most often: "what is the
     freshest fundamentals figure ARGUS could have used for this security
-    on this date", not "give me a specific quarter". Ordering by
-    `fiscal_period_end DESC, availability_time DESC` after the
-    `availability_time <= as_of` filter is sufficient on its own to get
-    both the most-recently-known period *and* its most-recently-known
-    restatement correctly — no separate group-by step is needed, because
-    a period that is not yet knowable is excluded by the filter before
-    the ordering ever sees it.
+    on this date", not "give me a specific quarter".
+
+    Unlike `get_fundamental_as_of`, `key` deliberately does not pin a
+    single logical record — it spans every period — so the ordering has to
+    say which period wins before availability is consulted. That is what
+    `precedence=("fiscal_period_end",)` expresses: `fiscal_period_end DESC,
+    availability_time DESC`, which gets both the most-recently-known
+    period *and* its most-recently-known restatement in one pass. No
+    separate group-by is needed, because a period that is not yet knowable
+    is excluded by the filter before the ordering ever sees it.
+
+    Dropping the precedence would not merely reorder ties. With Q1 filed
+    in May, Q2 filed in August, and Q1 restated in September, ordering on
+    `availability_time` alone returns the Q1 restatement for an October
+    query — the wrong quarter, not a stale one.
     """
-    query = (
-        select(canonical_fundamentals)
-        .where(
-            canonical_fundamentals.c.security_id == security_id,
-            canonical_fundamentals.c.statement_type == statement_type.value,
-            canonical_fundamentals.c.availability_time <= as_of,
-        )
-        .order_by(
-            canonical_fundamentals.c.fiscal_period_end.desc(),
-            canonical_fundamentals.c.availability_time.desc(),
-        )
-        .limit(1)
+    row = select_latest_as_of(
+        connection,
+        canonical_fundamentals,
+        key={
+            "security_id": security_id,
+            "statement_type": statement_type.value,
+        },
+        as_of=as_of,
+        precedence=("fiscal_period_end",),
     )
-    row = connection.execute(query).first()
     if row is None:
         return AsOfResult.miss(MissReason.NOT_YET_AVAILABLE, as_of=as_of)
     return _row_to_result(row, as_of)

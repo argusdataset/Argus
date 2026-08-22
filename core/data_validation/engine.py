@@ -25,6 +25,7 @@ query with a subtly different mistake in it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -39,6 +40,7 @@ def select_latest_as_of(
     key: dict[str, Any],
     as_of: datetime,
     availability_column: str = "availability_time",
+    precedence: Sequence[str] = (),
 ) -> Row | None:
     """The row for `key` with the greatest `availability_column` <= `as_of`.
 
@@ -47,12 +49,30 @@ def select_latest_as_of(
     restatement of the *same* fact shares. Returns None if no row for
     that key is knowable by `as_of`; the caller wraps that in an
     `AsOfResult` miss rather than treating None as "the value is null".
+
+    `precedence` names columns ordered **descending before**
+    `availability_column`, for the case where `key` deliberately does not
+    pin a single logical record. `get_latest_fundamental_as_of` is the
+    motivating caller: it asks for "the most recently *ended* period that
+    was knowable", so it keys on `(security_id, statement_type)` and
+    passes `precedence=("fiscal_period_end",)`. Without it, a restatement
+    of an *older* period filed after a newer period's original filing
+    would win on `availability_time` alone and the query would silently
+    return the wrong quarter.
+
+    It changes only the ordering, never the filter — every caller gets the
+    same `availability_column <= as_of` enforcement regardless. Defaulting
+    to empty leaves the emitted SQL byte-identical for callers that do not
+    pass it.
     """
     column = table.c[availability_column]
     conditions = [table.c[name] == value for name, value in key.items()]
     conditions.append(column <= as_of)
 
-    query = select(table).where(and_(*conditions)).order_by(column.desc()).limit(1)
+    ordering = [table.c[name].desc() for name in precedence]
+    ordering.append(column.desc())
+
+    query = select(table).where(and_(*conditions)).order_by(*ordering).limit(1)
     return connection.execute(query).first()
 
 

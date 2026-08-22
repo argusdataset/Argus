@@ -35,6 +35,23 @@ latest row. This single rule lives in exactly one place,
 query (`ohlcv.py`, `fundamentals.py`, `corporate_actions.py`,
 `feature_vectors.py`) is built on it rather than re-implementing it.
 
+That was not fully true when Module 07 shipped, and the gap is worth
+recording. `fundamentals.py` originally wrote the filter inline in both
+of its queries rather than calling the helper. Both copies were correct,
+so no test failed — but deleting the filter from `select_latest_as_of`
+took down only 1 of the 12 PIT-enforcement tests, which is the real
+measure of whether a chokepoint is load-bearing. After consolidating
+them it takes down 6, including `test_the_real_query_blocks_the_leak`.
+
+Consolidating the second query needed `select_latest_as_of` to grow a
+`precedence` argument. `get_latest_fundamental_as_of` spans every fiscal
+period rather than pinning one, so it must order by `fiscal_period_end`
+*before* `availability_time`; ordering on availability alone returns a
+restatement of an older quarter that happened to be filed after a newer
+quarter's original. `precedence` changes ordering only and can never
+widen what is visible — `test_precedence_cannot_weaken_the_availability_filter`
+pins that.
+
 Universe membership (`universe.py`) uses a different but equally
 load-bearing predicate — Module 06's half-open listing interval
 (`listed_from <= as_of AND (listed_to IS NULL OR listed_to > as_of)`) —
