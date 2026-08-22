@@ -131,13 +131,35 @@ universe_membership = Table(
         pg_enum(ListingStatus, "listing_status"),
         nullable=False,
     ),
+    # The listing interval that justifies this membership (migration 0004).
+    # Membership is a DATED JOIN, not a current-status flag: Module 07 has
+    # to answer "who was in the universe on date X", and a status flag
+    # alone cannot be queried that way — the information simply is not
+    # there to retrofit. `listing_status` describes the security as of the
+    # version's as_of_date; these columns say when it was actually listed.
+    Column("listed_from", DateTime(timezone=True), nullable=False),
+    # NULL means still listed as of the version's as_of_date.
+    Column("listed_to", DateTime(timezone=True), nullable=True),
+    # Which venue the listing was on, per Module 05's normalize_exchange.
+    Column("exchange", Text, nullable=False),
     # Delisted and bankrupt securities stay in the historical universe on
     # purpose: dropping them is exactly how survivorship bias gets into a
     # backtest. Module 09's live eligibility gate excludes them from the
     # candidate pool, which is a separate decision.
     Column("has_sufficient_history", Boolean, nullable=False, server_default="true"),
+    # How listed_from / listed_to were established. FMP does not supply a
+    # listing date for currently-listed securities, so the interval is
+    # often inferred; recording the basis keeps an inferred boundary
+    # distinguishable from a reported one.
+    Column("interval_evidence", Text, nullable=False, server_default="unknown"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint("universe_version_id", "security_id", name="uq_membership"),
+    CheckConstraint(
+        "listed_to IS NULL OR listed_to > listed_from",
+        name="listing_interval_ordered",
+    ),
     Index("ix_universe_membership_security", "security_id"),
-    comment="Which securities were in which universe version, including delisted/bankrupt ones.",
+    # Serves Module 07's "in the universe on date X" predicate.
+    Index("ix_universe_membership_interval", "universe_version_id", "listed_from", "listed_to"),
+    comment="Which securities were in which universe version, with the listing interval that justifies it.",
 )
