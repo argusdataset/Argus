@@ -1,3 +1,3 @@
 # Public Stats Service
 
-Public Stats Service — built in a future module. Serves ARGUS's public, honest track-record statistics.
+Public Stats Service — built in Module 20. Serves ARGUS's public, honest track-record statistics.

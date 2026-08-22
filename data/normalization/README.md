@@ -1,3 +1,3 @@
 # Normalization
 
-Normalization — built in a future module. Handles corporate actions and ticker/identity history normalization.
+Normalization — built in Module 05. Handles corporate actions and ticker/identity history normalization.

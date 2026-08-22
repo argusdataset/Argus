@@ -77,8 +77,8 @@ by name so far:
   scoring logic (`core/feature_engine/`, `core/candidate_detection/`,
   `core/target_model_matching/`, `core/historical_similarity/`,
   `core/risk_context/`, `core/scoring/`).
-- **Module 21** — Authentication (`services/identity/`).
-- **Module 24** — Deployment / Docker configuration.
+- **Module 22** — Authentication (`services/identity/`).
+- **Module 25** — Deployment / Docker configuration (Module 24 is Security Hardening).
 
 Folders not yet tied to a specific module number will get one as the
 corresponding module prompt is written.

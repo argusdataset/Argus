@@ -1,3 +1,3 @@
 # Terminal Service
 
-Terminal Service — built in a future module. Serves fundamentals and news data to users, independent of the scoring pipeline.
+Terminal Service — built in Module 19. Serves fundamentals and news data to users, independent of the scoring pipeline.

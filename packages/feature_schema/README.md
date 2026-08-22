@@ -1,3 +1,3 @@
 # Feature Schema
 
-Feature Schema — built in a future module. Shared schema definitions for feature vectors used across core modules.
+Feature Schema — cross-cutting, first populated by Module 08. Shared schema definitions for feature vectors used across core modules.

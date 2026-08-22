@@ -1,3 +1,3 @@
 # Shared Types
 
-Shared Types — built in a future module. Common types and data structures shared across core and services.
+Shared Types — cross-cutting, grows with every module. Common types and data structures shared across core and services.
