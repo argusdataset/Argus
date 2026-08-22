@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
+from infra.db.enums import MarketState
 from infra.db.metadata import pit_columns
 from infra.db.schema import metadata
 
@@ -300,3 +301,131 @@ def test_similarity_keeps_cross_asset_and_same_asset_separate(engine: Engine):
             {"security": ids["security"]},
         ).scalar_one()
     assert stored == 2
+
+
+# --------------------------------------------------------------------------
+# Ticker-history validity ranges (Module 04 Part 0 correction)
+# --------------------------------------------------------------------------
+
+
+def _new_security(engine: Engine, name: str) -> uuid.UUID:
+    with engine.begin() as conn:
+        return conn.execute(
+            text("INSERT INTO security_identity (name) VALUES (:n) RETURNING id"), {"n": name}
+        ).scalar_one()
+
+
+_INSERT_TICKER = text(
+    "INSERT INTO security_ticker_history (security_id, ticker, exchange, valid_from, valid_to) "
+    "VALUES (:security, :ticker, 'NASDAQ', :valid_from, :valid_to)"
+)
+
+
+def test_one_security_cannot_hold_two_tickers_at_once(engine: Engine):
+    security_id = _new_security(engine, "Overlap Co")
+    ticker = f"OV{uuid.uuid4().hex[:6].upper()}"
+    with engine.begin() as conn:
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": security_id,
+                "ticker": ticker,
+                "valid_from": "2010-01-01T00:00:00+00:00",
+                "valid_to": "2015-01-01T00:00:00+00:00",
+            },
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": security_id,
+                "ticker": f"{ticker}B",
+                "valid_from": "2014-01-01T00:00:00+00:00",
+                "valid_to": "2016-01-01T00:00:00+00:00",
+            },
+        )
+
+
+def test_one_ticker_cannot_map_to_two_securities_at_once(engine: Engine):
+    """Otherwise "who was AAPL on 2013-06-01" has more than one answer."""
+    first = _new_security(engine, "First Holder")
+    second = _new_security(engine, "Second Holder")
+    ticker = f"RC{uuid.uuid4().hex[:6].upper()}"
+    with engine.begin() as conn:
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": first,
+                "ticker": ticker,
+                "valid_from": "2010-01-01T00:00:00+00:00",
+                "valid_to": "2015-01-01T00:00:00+00:00",
+            },
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": second,
+                "ticker": ticker,
+                "valid_from": "2012-01-01T00:00:00+00:00",
+                "valid_to": "2013-01-01T00:00:00+00:00",
+            },
+        )
+
+
+def test_ticker_may_be_recycled_after_the_previous_holder_delists(engine: Engine):
+    """Recycling is legitimate and must stay possible — only overlap is barred."""
+    first = _new_security(engine, "Delisted Co")
+    second = _new_security(engine, "New Holder")
+    ticker = f"RE{uuid.uuid4().hex[:6].upper()}"
+    with engine.begin() as conn:
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": first,
+                "ticker": ticker,
+                "valid_from": "2010-01-01T00:00:00+00:00",
+                "valid_to": "2015-01-01T00:00:00+00:00",
+            },
+        )
+        conn.execute(
+            _INSERT_TICKER,
+            {
+                "security": second,
+                "ticker": ticker,
+                "valid_from": "2015-01-01T00:00:00+00:00",
+                "valid_to": None,
+            },
+        )
+
+    with engine.connect() as conn:
+        holders = conn.execute(
+            text("SELECT count(*) FROM security_ticker_history WHERE ticker = :t"), {"t": ticker}
+        ).scalar_one()
+    assert holders == 2
+
+
+# --------------------------------------------------------------------------
+# The ninth market state
+# --------------------------------------------------------------------------
+
+
+def test_unclassified_is_an_available_market_state(engine: Engine):
+    """A security with too little history must not be forced into DOWN_TREND."""
+    with engine.connect() as conn:
+        labels = (
+            conn.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                    "WHERE t.typname = 'market_state_enum' ORDER BY e.enumsortorder"
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(labels) == 9
+    assert labels[0] == "UNCLASSIFIED"
+    assert set(labels) == {member.value for member in MarketState}

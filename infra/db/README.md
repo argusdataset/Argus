@@ -94,6 +94,43 @@ why a test asserts it.
 all its inputs) so a vector's PIT-correctness can be verified without
 re-deriving its input set.
 
+## Multi-timeframe bars: derived, not fetched
+
+**Decision: ARGUS derives H4 / Weekly / Monthly bars itself from daily
+data. It does not fetch them from FMP.**
+
+Reasons:
+
+- FMP's intraday history is unlikely to extend the full ~30 years ARGUS
+  needs, so H4 would have a much shorter usable history than daily.
+- Deriving them ourselves keeps point-in-time control entirely in our
+  hands — an aggregated bar inherits the `availability_time` of the daily
+  bars that produced it, which a provider-supplied bar could not
+  guarantee.
+- Weekly and monthly bars aggregate cleanly and deterministically from
+  daily, so there is nothing to gain from a second source of truth.
+
+`canonical_ohlcv.timeframe` already carries all four values, so no schema
+change is needed. Module 04 sources DAILY only; the actual derivation is
+Module 08's work. Recorded here so the decision is not re-litigated.
+
+## Ticker-history validity ranges
+
+`security_ticker_history` carries two `gist` exclusion constraints
+(requiring the standard `btree_gist` extension):
+
+- `excl_ticker_history_security_overlap` — one security holds one ticker
+  at a time.
+- `excl_ticker_history_ticker_overlap` — one ticker maps to one security
+  at a time. Tickers get recycled after a delisting, so "who was trading
+  as AAPL on 2013-06-01" must have exactly one answer.
+
+These are database constraints rather than tests because the failure mode
+is quiet: overlapping ranges make identity resolution in Module 05
+produce wrong joins, and every downstream historical calculation inherits
+the error without anything visibly failing. Reusing a ticker *after* the
+previous holder's range closes is legitimate and remains allowed.
+
 ## Append-only and immutability guarantees
 
 Enforced by database triggers, not application convention. Two strengths:

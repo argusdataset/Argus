@@ -55,7 +55,7 @@ class CorporateActionType(StrEnum):
 
 
 class MarketState(StrEnum):
-    """The Market State Engine's states (Module 10).
+    """The Market State Engine's nine states (Module 10).
 
     The nominal forward cycle is
     DOWN_TREND -> BASE_FORMING -> CONSOLIDATION -> ACCUMULATION ->
@@ -64,8 +64,15 @@ class MarketState(StrEnum):
     returns to CONSOLIDATION). Backward transitions are expected, and the
     transition history is itself a feature — see
     market_state_transitions.
+
+    UNCLASSIFIED sits outside that cycle and is deliberately first: it is
+    the honest initial state for a newly listed security, or one with
+    insufficient history to classify. Forcing such a security into
+    DOWN_TREND would silently corrupt both the derived watchlists and any
+    statistic computed over the distribution of states.
     """
 
+    UNCLASSIFIED = "UNCLASSIFIED"
     DOWN_TREND = "DOWN_TREND"
     BASE_FORMING = "BASE_FORMING"
     CONSOLIDATION = "CONSOLIDATION"

@@ -20,8 +20,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    literal_column,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ExcludeConstraint
 
 from infra.db.enums import ListingStatus
 from infra.db.metadata import metadata, pg_enum
@@ -63,6 +64,28 @@ security_ticker_history = Table(
     CheckConstraint(
         "valid_to IS NULL OR valid_to > valid_from",
         name="valid_range_ordered",
+    ),
+    # Overlapping validity ranges are the quiet failure mode that matters
+    # here: if either of these can happen, identity resolution in Module 05
+    # produces wrong joins and every downstream historical calculation
+    # inherits the error with nothing visibly failing. A constraint is
+    # worth more than a test for exactly this reason.
+    #
+    # 1. One security holds one ticker at a time.
+    ExcludeConstraint(
+        ("security_id", "="),
+        (literal_column("tstzrange(valid_from, valid_to)"), "&&"),
+        name="excl_ticker_history_security_overlap",
+        using="gist",
+    ),
+    # 2. One ticker maps to one security at a time. Tickers are recycled
+    #    after a delisting, so "who was trading as AAPL on 2013-06-01"
+    #    must have exactly one answer.
+    ExcludeConstraint(
+        ("ticker", "="),
+        (literal_column("tstzrange(valid_from, valid_to)"), "&&"),
+        name="excl_ticker_history_ticker_overlap",
+        using="gist",
     ),
     # Resolving "which security was trading as AAPL on 2013-06-01" is the
     # hot path here, hence ticker leading the index.
