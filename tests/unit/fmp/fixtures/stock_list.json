@@ -1,0 +1,6 @@
+[
+  {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ Global Select", "exchangeShortName": "NASDAQ", "type": "stock", "price": 189.5},
+  {"symbol": "GE", "name": "General Electric Company", "exchange": "New York Stock Exchange", "exchangeShortName": "NYSE", "type": "stock"},
+  {"symbol": "SHOP.TO", "name": "Shopify Inc.", "exchange": "Toronto", "exchangeShortName": "TSX", "type": "stock"},
+  {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "exchange": "NYSE Arca", "exchangeShortName": "AMEX", "type": "etf"}
+]

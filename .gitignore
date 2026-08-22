@@ -32,6 +32,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Provider response cache and job checkpoints (Module 04)
+.cache/
+
 # Coverage
 .coverage
 .coverage.*

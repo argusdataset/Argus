@@ -39,8 +39,24 @@ def test_database_host_has_a_dev_friendly_default(required_db_env):
 
 def test_providers_have_defaults(required_db_env):
     config = AppConfig()
-    assert config.providers.fmp_base_url == "https://financialmodelingprep.com/api"
+    # Host only: FMP's endpoint paths carry their own prefix (/stable/...
+    # or the legacy /api/v3/...), so the base URL must not assume one.
+    assert config.providers.fmp_base_url == "https://financialmodelingprep.com"
     assert config.providers.fmp_request_timeout_seconds == 30
+
+
+def test_rate_limits_are_configurable_not_hardcoded(required_db_env, monkeypatch):
+    """Limits are a property of the FMP plan, so changing plan is config-only."""
+    assert AppConfig().providers.fmp_requests_per_minute == 300
+
+    monkeypatch.setenv("ARGUS_PROVIDERS__FMP_REQUESTS_PER_MINUTE", "3000")
+    assert AppConfig().providers.fmp_requests_per_minute == 3000
+
+
+def test_bulk_endpoints_have_their_own_rate_budget(required_db_env):
+    """FMP throttles bulk downloads far harder than standard endpoints."""
+    providers = AppConfig().providers
+    assert providers.fmp_bulk_requests_per_minute < providers.fmp_requests_per_minute
 
 
 def test_logging_has_defaults(required_db_env):

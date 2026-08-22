@@ -1,0 +1,4 @@
+[
+  {"symbol": "AAPL", "date": "2024-01-03", "open": 184.22, "high": 185.88, "low": 183.43, "close": 184.25, "volume": 58414500, "adjOpen": 183.6, "adjHigh": 185.25, "adjLow": 182.81, "adjClose": 183.63, "adjVolume": 58414500, "change": 0.03, "vwap": 184.45},
+  {"symbol": "AAPL", "date": "2024-01-02", "open": 187.15, "high": 188.44, "low": 183.885, "close": 185.64, "volume": 82488700, "adjOpen": 186.51, "adjHigh": 187.8, "adjLow": 183.26, "adjClose": 185.0, "adjVolume": 82488700}
+]

@@ -42,14 +42,46 @@ class DatabaseSettings(BaseModel):
 
 
 class ProvidersSettings(BaseModel):
-    """External data provider settings. Module 04 (FMP Provider Adapter) will use these.
+    """External data provider settings, used by Module 04's FMP adapter.
 
     No API key field — the FMP credential is a secret, resolved via
     SecretsProvider, never stored on this object.
+
+    Rate limits are configuration rather than constants because they are a
+    property of the *subscription*, not of the API: FMP's published
+    per-minute limits differ by plan (Starter 300, Premium 750, Ultimate
+    3000), and the bulk-download endpoints carry their own much stricter
+    limit. Changing plan must not require a code change.
     """
 
-    fmp_base_url: str = "https://financialmodelingprep.com/api"
+    fmp_base_url: str = "https://financialmodelingprep.com"
     fmp_request_timeout_seconds: int = 30
+
+    # Standard endpoints. Defaults to the Starter plan's published limit,
+    # the most conservative paid tier.
+    fmp_requests_per_minute: int = 300
+
+    # Bulk CSV downloads are throttled far harder than standard endpoints
+    # (FMP documents roughly one download per 10s, and one per minute for
+    # profile/ETF-holder bulk), so they get their own budget.
+    fmp_bulk_requests_per_minute: int = 6
+
+    # Ceiling on simultaneous in-flight requests. The rate limiter governs
+    # throughput; this bounds how much is outstanding at once.
+    fmp_max_concurrency: int = 8
+
+    # Retries for transient failures (429 and 5xx) before giving up.
+    fmp_max_retries: int = 5
+    fmp_backoff_base_seconds: float = 1.0
+    fmp_backoff_max_seconds: float = 60.0
+
+    # Filesystem response cache. Historical bars do not change, so a
+    # re-run should not re-fetch them.
+    fmp_cache_enabled: bool = True
+    fmp_cache_dir: str = ".cache/fmp"
+
+    # Where resumable job checkpoints are written.
+    fmp_checkpoint_dir: str = ".cache/fmp/checkpoints"
 
 
 class ExecutionSettings(BaseModel):

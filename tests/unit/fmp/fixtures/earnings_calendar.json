@@ -1,0 +1,4 @@
+[
+  {"symbol": "AAPL", "date": "2024-05-02", "epsActual": 1.53, "epsEstimated": 1.5, "revenueActual": 90753000000, "revenueEstimated": 90014000000, "time": "amc"},
+  {"symbol": "MSFT", "date": "2024-04-25", "epsEstimated": 2.83, "revenueEstimated": 60800000000, "time": "amc"}
+]
