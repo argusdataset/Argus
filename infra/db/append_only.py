@@ -61,6 +61,14 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     "scoring_configuration",
     "detection_configuration",
     "data_snapshot",
+    # Canonical data. A canonical row records what ARGUS believed at a
+    # point in time; editing one destroys the evidence of that belief and
+    # makes every historical claim computed from it uncheckable.
+    # Restatements arrive as new rows with a later observation_time —
+    # see infra/db/schema/canonical.py. Guards added in migration 0003.
+    "canonical_ohlcv",
+    "canonical_fundamentals",
+    "canonical_corporate_actions",
     # Event streams and written results.
     "market_state_transitions",
     "eligibility_check_results",
