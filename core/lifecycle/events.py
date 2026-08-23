@@ -51,7 +51,7 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection
 
 from infra.db.enums import SetupLifecycleStatus
-from infra.db.schema.setups import setup_events
+from infra.db.schema.setups import setup_events, setups
 
 # --------------------------------------------------------------------------
 # Event types. Free text in the schema; named constants here.
@@ -162,6 +162,9 @@ def append_event(
         .returning(setup_events.c.id)
     ).scalar_one()
 
+    if lifecycle_status is SetupLifecycleStatus.OUTCOME:
+        _mark_concluded(connection, setup_id, occurred_at)
+
     return SetupEvent(
         setup_id=setup_id,
         sequence_number=sequence,
@@ -170,6 +173,27 @@ def append_event(
         occurred_at=occurred_at,
         payload=body,
         id=event_id,
+    )
+
+
+def _mark_concluded(connection: Connection, setup_id: UUID, occurred_at: datetime) -> None:
+    """Set the terminal marker that frees the security's open-setup slot.
+
+    A projection of the event just written, never a second source of
+    truth. Migration 0006 explains why it exists: openness is derived from
+    `setup_events`, and the partial unique index enforcing one open setup
+    per security needs a predicate over a column on `setups` itself.
+
+    Maintained here rather than in `advance()` because this is the single
+    write path — a terminal event appended directly would otherwise leave
+    the marker unset and the security's slot occupied forever. Nothing
+    reads it back: `state_from` derives status from events alone, and a
+    test asserts the two never disagree.
+    """
+    connection.execute(
+        setups.update()
+        .where(setups.c.id == setup_id, setups.c.concluded_at.is_(None))
+        .values(concluded_at=occurred_at)
     )
 
 

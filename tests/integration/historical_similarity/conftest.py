@@ -19,6 +19,10 @@ from sqlalchemy.engine import Connection
 
 from core.candidate_detection.config import DetectionConfig, publish_detection_configuration
 from core.feature_engine.spec import FeatureSpec, publish_feature_schema_version
+from core.historical_similarity.config import (
+    SimilarityConfig,
+    publish_similarity_configuration,
+)
 from core.market_state.thresholds import MarketStateConfig, publish_target_model_version
 from data.canonical_model.exchanges import CanonicalExchange
 from data.normalization.identity import SecurityIdentityResolver
@@ -81,6 +85,12 @@ def version_ids(connection: Connection) -> dict[str, UUID]:
         "universe": universe_id,
         "target_model": publish_target_model_version(connection, MarketStateConfig()),
         "detection": publish_detection_configuration(connection, DetectionConfig()),
+        # Migration 0006 made setup_outcomes.data_snapshot_id NOT NULL:
+        # an outcome nobody can re-derive is the one result in ARGUS that
+        # must not exist.
+        "snapshot": publish_similarity_configuration(
+            connection, SimilarityConfig(), as_of=AS_OF
+        ),
     }
 
 
@@ -107,6 +117,7 @@ def make_case(
         regime: MarketState = MarketState.UPTREND,
         feature_availability: datetime | None = None,
     ) -> UUID:
+        concluded = recorded_at or datetime(2023, 6, 1, tzinfo=UTC)
         setup_id = connection.execute(
             setups.insert()
             .values(
@@ -115,6 +126,12 @@ def make_case(
                 target_model_version_id=version_ids["target_model"],
                 detection_configuration_id=version_ids["detection"],
                 universe_version_id=version_ids["universe"],
+                # A case *is* a concluded setup — it has an outcome. Set
+                # explicitly so the fixture states that rather than
+                # leaving these looking permanently open, which migration
+                # 0006's one-open-setup-per-security index would refuse
+                # for a security with more than one case.
+                concluded_at=concluded,
             )
             .returning(setups.c.id)
         ).scalar_one()
@@ -140,7 +157,8 @@ def make_case(
                 time_to_mfe=timedelta(days=45),
                 outcome_window=timedelta(days=90),
                 market_regime_at_outcome=regime.value,
-                recorded_at=recorded_at or datetime(2023, 6, 1, tzinfo=UTC),
+                data_snapshot_id=version_ids["snapshot"],
+                recorded_at=concluded,
             )
         )
         return setup_id

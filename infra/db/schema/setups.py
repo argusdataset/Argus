@@ -35,6 +35,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -81,7 +82,26 @@ setups = Table(
         ForeignKey("universe_version.id", ondelete="RESTRICT"),
         nullable=False,
     ),
+    # A terminal marker, NOT a status column: NULL while the setup is
+    # open, set to the terminal event's occurred_at when one is written.
+    # It exists so the partial unique index below has a predicate to use —
+    # openness is derived from setup_events, and an index predicate cannot
+    # query another table. Added in migration 0006, which explains why
+    # migration 0005's shape did not transfer unchanged.
+    #
+    # The projection rule from market_state applies: the log is
+    # authoritative, this is rebuildable from it, and when they disagree
+    # the log is right. core/lifecycle/derivation.py never reads this.
+    Column("concluded_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # At most one open setup per security. Two would make "which setup
+    # does this candidate belong to" ambiguous at every later scan.
+    Index(
+        "uq_setups_open_per_security",
+        "security_id",
+        unique=True,
+        postgresql_where=text("concluded_at IS NULL"),
+    ),
     Index("ix_setups_security_time", "security_id", "detected_at"),
     comment="A detected setup. Current lifecycle status is derived from setup_events.",
 )
@@ -160,7 +180,18 @@ setup_outcomes = Table(
         pg_enum(FalsePositiveType, "false_positive_type"),
         nullable=True,
     ),
+    # The PIT cutoff and outcome definition this row was computed under.
+    # Every other result table in ARGUS carries one; this table went
+    # without until migration 0006, which would have made the single most
+    # consequential result in the system the one nobody could re-derive.
+    Column(
+        "data_snapshot_id",
+        UUID(as_uuid=True),
+        ForeignKey("data_snapshot.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
     Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("ix_setup_outcomes_snapshot", "data_snapshot_id"),
     Index("ix_setup_outcomes_status", "outcome_status"),
     Index("ix_setup_outcomes_false_positive", "false_positive_type"),
     comment="Outcome and case record for a setup. Failures carry the same detail as successes.",

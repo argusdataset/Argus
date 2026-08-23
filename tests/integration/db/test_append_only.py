@@ -72,6 +72,22 @@ def _seed_setup(engine: Engine) -> uuid.UUID:
         ).scalar_one()
 
 
+def _seed_snapshot(engine: Engine) -> uuid.UUID:
+    """A data_snapshot row, which setup_outcomes now requires.
+
+    Migration 0006 made `data_snapshot_id` NOT NULL: an outcome nobody can
+    re-derive is the one result in ARGUS that must not exist.
+    """
+    with engine.begin() as conn:
+        return conn.execute(
+            text(
+                "INSERT INTO data_snapshot (version_label, as_of_time, definition, "
+                "content_checksum) VALUES (:label, now(), '{}'::jsonb, :sum) RETURNING id"
+            ),
+            {"label": f"snapshot-test-{uuid.uuid4().hex[:8]}", "sum": uuid.uuid4().hex},
+        ).scalar_one()
+
+
 # --------------------------------------------------------------------------
 # Append-only tables: INSERT allowed, everything else refused
 # --------------------------------------------------------------------------
@@ -153,8 +169,11 @@ def test_setup_outcome_cannot_be_deleted(engine: Engine):
     setup_id = _seed_setup(engine)
     with engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO setup_outcomes (setup_id, outcome_status) VALUES (:id, 'FAILED')"),
-            {"id": setup_id},
+            text(
+                "INSERT INTO setup_outcomes (setup_id, outcome_status, data_snapshot_id) "
+                "VALUES (:id, 'FAILED', :snapshot)"
+            ),
+            {"id": setup_id, "snapshot": _seed_snapshot(engine)},
         )
 
     with pytest.raises(REJECTED), engine.begin() as conn:
@@ -166,8 +185,11 @@ def test_setup_outcome_allows_review_classification_update(engine: Engine):
     setup_id = _seed_setup(engine)
     with engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO setup_outcomes (setup_id, outcome_status) VALUES (:id, 'FAILED')"),
-            {"id": setup_id},
+            text(
+                "INSERT INTO setup_outcomes (setup_id, outcome_status, data_snapshot_id) "
+                "VALUES (:id, 'FAILED', :snapshot)"
+            ),
+            {"id": setup_id, "snapshot": _seed_snapshot(engine)},
         )
         conn.execute(
             text(

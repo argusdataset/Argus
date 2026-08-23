@@ -394,3 +394,124 @@ def test_the_expiry_windows_are_read_from_the_configuration(connection, register
     )
 
     assert report.results[0].action == EXPIRED
+
+
+# --------------------------------------------------------------------------
+# One open setup per security — now structural (migration 0006)
+# --------------------------------------------------------------------------
+
+
+def test_the_database_rejects_a_second_open_setup_for_one_security(
+    connection, register, lineage
+):
+    """Not just resolved gracefully by application code — refused.
+
+    Module 14 maintained this invariant in `_index_by_security` and
+    flagged that the schema did not enforce it. Two open setups would make
+    "which setup does this candidate belong to" ambiguous at every later
+    scan, and under concurrency the application check could be passed by
+    both writers.
+    """
+    from psycopg import errors
+    from sqlalchemy.exc import IntegrityError
+
+    security_id = register("ONLYONE")
+    open_setup(connection, security_id, as_of=AS_OF, lineage=lineage)
+
+    savepoint = connection.begin_nested()
+    with pytest.raises(IntegrityError) as raised:
+        open_setup(connection, security_id, as_of=AS_OF + timedelta(days=1), lineage=lineage)
+    assert isinstance(raised.value.orig, errors.UniqueViolation)
+    savepoint.rollback()
+
+
+def test_concluding_a_setup_frees_the_security_for_a_new_one(
+    connection, register, lineage
+):
+    """The index is partial on `concluded_at IS NULL`, so a finished setup
+    stops occupying its security's slot — which is what makes a second
+    base on the same security a new setup rather than an impossibility."""
+    security_id = register("REUSE")
+    first, _ = open_setup(connection, security_id, as_of=AS_OF, lineage=lineage)
+    append_event(
+        connection,
+        first,
+        lifecycle_status=SetupLifecycleStatus.OUTCOME,
+        event_type=ENDPOINT_REACHED,
+        occurred_at=AS_OF + timedelta(days=1),
+        payload={},
+    )
+
+    second, _ = open_setup(
+        connection, security_id, as_of=AS_OF + timedelta(days=2), lineage=lineage
+    )
+
+    assert second != first
+    concluded = connection.execute(
+        select(setups.c.concluded_at).where(setups.c.id == first)
+    ).scalar_one()
+    assert concluded == AS_OF + timedelta(days=1)
+
+
+def test_the_terminal_marker_is_set_on_every_write_path(connection, register, lineage, scored):
+    """`advance()` and a direct `append_event` must both maintain it.
+
+    Only one of the two did when the column was first added, which left a
+    concluded setup still occupying its security's slot. The marker
+    belongs in the single write path, not in the convenience wrapper.
+    """
+    via_advance = register("VIAADV")
+    setup_id = _walk_to_active(connection, lineage, scored(via_advance))
+    advance_lifecycle(
+        connection,
+        [_observe(scored(via_advance), MarketState.UPTREND)],
+        as_of=AS_OF + timedelta(days=4),
+        lineage=lineage,
+    )
+
+    marker = connection.execute(
+        select(setups.c.concluded_at).where(setups.c.id == setup_id)
+    ).scalar_one()
+    assert marker == AS_OF + timedelta(days=4)
+
+
+def test_the_marker_never_disagrees_with_the_derived_status(
+    connection, register, lineage, scored
+):
+    """The projection rule, asserted.
+
+    `concluded_at` is a projection of the event log, exactly as Module
+    10's `market_state` is a projection of its transitions. The log stays
+    authoritative — `state_from` never reads this column — so the only
+    thing that can go wrong is drift, and this is what makes drift visible.
+    """
+    open_id = _walk_to_active(connection, lineage, scored(register("DRIFTA")))
+    closed_id = _walk_to_active(connection, lineage, scored(register("DRIFTB")))
+    append_event(
+        connection,
+        closed_id,
+        lifecycle_status=SetupLifecycleStatus.OUTCOME,
+        event_type=ENDPOINT_REACHED,
+        occurred_at=AS_OF + timedelta(days=3),
+        payload={},
+    )
+
+    for setup_id in (open_id, closed_id):
+        marker = connection.execute(
+            select(setups.c.concluded_at).where(setups.c.id == setup_id)
+        ).scalar_one()
+        derived = current_status(connection, setup_id)
+        assert (marker is not None) == derived.is_terminal, setup_id
+
+
+def test_the_derivation_still_ignores_the_marker(connection, register, lineage, scored):
+    """Belt and braces: corrupt the projection and the derived status must
+    not move. If it did, the log would have stopped being authoritative."""
+    setup_id = _walk_to_active(connection, lineage, scored(register("IGNORED")))
+    connection.execute(
+        setups.update()
+        .where(setups.c.id == setup_id)
+        .values(concluded_at=AS_OF + timedelta(days=99))
+    )
+
+    assert current_status(connection, setup_id).status is SetupLifecycleStatus.ACTIVE
