@@ -12,7 +12,9 @@ those.
 from packages.config.environment import Environment
 from packages.config.execution import ExecutionMode
 from packages.config.secrets import (
+    ChainedSecretsProvider,
     DotEnvSecretsProvider,
+    EnvironmentSecretsProvider,
     SecretNotFoundError,
     SecretsProvider,
     get_secrets_provider,
@@ -21,7 +23,9 @@ from packages.config.settings import AppConfig, get_config
 
 __all__ = [
     "AppConfig",
+    "ChainedSecretsProvider",
     "DotEnvSecretsProvider",
+    "EnvironmentSecretsProvider",
     "Environment",
     "ExecutionMode",
     "SecretNotFoundError",

@@ -90,6 +90,12 @@ will fill it in, and an `__init__.py` marking it as a Python package.
 
 ## Dev environment setup
 
+**Prerequisite: PostgreSQL 16.** The schema depends on Postgres-specific
+features — plpgsql triggers enforcing append-only history, native enum
+types, JSONB, GiST exclusion constraints and partial unique indexes — so
+an older major version or a different engine will not run the migrations.
+The database-backed tests skip cleanly when no server is reachable.
+
 ```bash
 # 1. Create and activate a virtual environment
 python3 -m venv .venv

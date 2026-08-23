@@ -12,7 +12,9 @@ implementation here — nothing else in the codebase should need to change.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -63,12 +65,77 @@ class DotEnvSecretsProvider(SecretsProvider):
         return f"DotEnvSecretsProvider(dotenv_path={str(self._dotenv_path)!r}, keys_loaded={len(self._values)})"
 
 
+class EnvironmentSecretsProvider(SecretsProvider):
+    """Reads secrets from the process environment.
+
+    Hosting platforms — Railway, Fly, Heroku, ECS, Kubernetes — inject
+    secrets as environment variables. Until this existed, ARGUS could not
+    see them at all: `DotEnvSecretsProvider` reads a `.env` *file* and
+    nothing else, so a deployed process had no way to resolve
+    `DATABASE_PASSWORD` or `FMP_API_KEY`.
+
+    Read at call time rather than snapshotted at construction, because a
+    process manager may rewrite the environment between calls and a stale
+    snapshot would be indistinguishable from a missing secret.
+    """
+
+    def get_secret(self, key: str) -> str:
+        try:
+            return os.environ[key]
+        except KeyError:
+            raise SecretNotFoundError(key) from None
+
+    def __repr__(self) -> str:
+        return "EnvironmentSecretsProvider()"
+
+
+class ChainedSecretsProvider(SecretsProvider):
+    """Tries each provider in order and returns the first hit.
+
+    Order is deliberate and load-bearing: the local `.env` is consulted
+    **before** the environment, so a developer's existing setup resolves
+    exactly as it did before this class existed. The environment fills in
+    only what `.env` does not have — which in production is everything,
+    since a deployed image carries no `.env` (it is gitignored and never
+    committed).
+
+    The reverse order would be a silent behaviour change: a stray exported
+    variable in a developer's shell would begin overriding their `.env`.
+    """
+
+    def __init__(self, providers: Sequence[SecretsProvider]) -> None:
+        if not providers:
+            raise ValueError("ChainedSecretsProvider needs at least one provider.")
+        self._providers = tuple(providers)
+
+    def get_secret(self, key: str) -> str:
+        for provider in self._providers:
+            try:
+                return provider.get_secret(key)
+            except SecretNotFoundError:
+                continue
+        raise SecretNotFoundError(key)
+
+    def __repr__(self) -> str:
+        inner = ", ".join(repr(provider) for provider in self._providers)
+        return f"ChainedSecretsProvider([{inner}])"
+
+
 def get_secrets_provider(config: AppConfig | None = None) -> SecretsProvider:
     """Build the active SecretsProvider from config.
 
-    Only one implementation exists today. This is the one place backend
-    selection will happen once a real secrets manager is added for
-    staging/production — nothing that calls get_secret() needs to change.
+    The local `.env` file first, then the process environment. Local
+    development and CI are unaffected — anything resolving from `.env`
+    before still resolves from `.env`, first — while a deployed process,
+    which has no `.env`, resolves everything from injected environment
+    variables.
+
+    This is still the one place backend selection happens; adding a real
+    secrets manager (AWS Secrets Manager, Vault) means adding an
+    implementation above and another link in this chain, and nothing that
+    calls get_secret() changes.
     """
     cfg = config or get_config()
-    return DotEnvSecretsProvider(cfg.secrets.dotenv_path)
+    return ChainedSecretsProvider(
+        [DotEnvSecretsProvider(cfg.secrets.dotenv_path), EnvironmentSecretsProvider()]
+    )
