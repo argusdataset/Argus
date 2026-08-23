@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional: only the language-model renderer in Module 16 uses this, and
+# ARGUS runs — and its whole test suite passes — without it.
+llm = [
+    "anthropic>=0.40",
+]
 dev = [
     "ruff>=0.6",
     "pytest>=8.0",
