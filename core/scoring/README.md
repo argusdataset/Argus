@@ -148,18 +148,25 @@ a stored signal cites, including every ramp, so a score written under
 today's placeholders stays re-derivable after they have been replaced
 twice.
 
+## Fixed in Module 14
+
+- **`signals` uniqueness.** Migration 0005 added the `uq_signals_identity`
+  partial unique index on `(security_id, event_time, data_snapshot_id,
+  scoring_configuration_id) WHERE supersedes_signal_id IS NULL`.
+  `write_signal` now uses `ON CONFLICT DO NOTHING` against it instead of a
+  read-then-insert guard, so the protection holds under concurrency and
+  corrections still work.
+- **`signals.detail`.** Migration 0005 added the JSONB column. It carries
+  the raw readings, what each ramp made of them, why a component was
+  unmeasured, the weight coverage, the confidence factors, the refusal
+  reason, and the calibration status — the "why" the seven columns alone
+  could not hold.
+- **target-model-v1's double-count.** Module 14 removed the duplicated
+  volatility reading from its `stabilization` sub-component. See
+  `core/market_state/target_model_matching/models/target_model_v1/model.py`.
+
 ## Known gaps, flagged not fixed
 
-- **`signals` has no unique constraint.** Every other result table in
-  ARGUS has one and uses `ON CONFLICT DO NOTHING`. `write_signal` compensates
-  with a read-then-insert guard on `(security_id, event_time,
-  data_snapshot_id, scoring_configuration_id)`, which is **not race-proof**.
-  The real fix is a migration.
-- **`signals` has no JSONB column.** The seven component values are stored,
-  but the layer below them — which ramp produced what, why a component was
-  unmeasured, the weight coverage, the calibration status — has nowhere to
-  live. The `probability` status currently rides along inside
-  `probability_definition` for want of anywhere better.
 - **Module 10 discards its typed `TargetModelAssessment`.** A typed seam
   exists between Module 10 and its model but not between Module 10 and its
   consumers. `upstream.py` reads the assessment back out of the evidence

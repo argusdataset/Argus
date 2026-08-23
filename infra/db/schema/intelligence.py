@@ -39,6 +39,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -251,6 +252,12 @@ signals = Table(
     # A correction is a new row pointing at the one it supersedes. The
     # original stays exactly as written.
     Column("supersedes_signal_id", UUID(as_uuid=True), ForeignKey("signals.id"), nullable=True),
+    # The layer beneath the seven component numbers: which ramp mapped
+    # which reading, why a component was unmeasured, how much of the
+    # weight was measurable, the configuration's calibration status.
+    # Added in migration 0005 — see it for why this table went without
+    # one when every other result table has it.
+    Column("detail", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     _score_range_check("argus_score"),
     _score_range_check("confidence"),
@@ -288,6 +295,19 @@ signals = Table(
     CheckConstraint(
         "probability IS NULL OR probability_definition IS NOT NULL",
         name="probability_requires_definition",
+    ),
+    # One scoring of one candidate: security, instant, data cutoff,
+    # configuration. Partial, because a correction is deliberately a
+    # second row with the same identity pointing at the one it replaces —
+    # only uncorrected originals must be unique. Added in migration 0005.
+    Index(
+        "uq_signals_identity",
+        "security_id",
+        "event_time",
+        "data_snapshot_id",
+        "scoring_configuration_id",
+        unique=True,
+        postgresql_where=text("supersedes_signal_id IS NULL"),
     ),
     Index("ix_signals_security_time", "security_id", "event_time"),
     Index("ix_signals_ranking", "evidence_status", "argus_score"),

@@ -60,9 +60,35 @@ COVERED_STATES: frozenset[MarketState] = frozenset(
 #: report precisely what was missing rather than "something".
 COMPONENT_INPUTS: dict[str, tuple[str, ...]] = {
     "prior_decline": ("peak_to_trough_decline",),
-    "stabilization": ("downside_momentum_reduction", "volatility_contraction_onset"),
+    "stabilization": ("downside_momentum_reduction",),
     "consolidation": ("volatility_compression", "normalized_range_width"),
     "awakening": ("volume_expansion", "resistance_pressure"),
+}
+
+#: Module 08 computes `volatility_contraction_onset` (Group A) and
+#: `volatility_compression` (Group B) from identical arithmetic under two
+#: names. Module 11 found the duplication; Module 13 found what it was
+#: doing here — this model used to read the Group A name in
+#: `stabilization` and the Group B name in `consolidation`, so one
+#: measurement entered `quality` twice and inflated the largest single
+#: share of `argus_score`.
+#:
+#: The key is the name this model refuses to read, the value is the one it
+#: reads instead — the same shape as Module 13's `DUPLICATE_FEATURES`, and
+#: there is a test asserting the two modules agree.
+#:
+#: **Consolidation keeps it, stabilization loses it.** Coiling *is*
+#: volatility compression — that is what the phase means, and the
+#: consolidation component has a dedicated `compression_saturation`
+#: threshold tuned for it. Stabilization's own signal is new lows becoming
+#: rarer; its volatility reading was borrowed from a Group A feature that
+#: turned out to be the Group B one wearing a different name.
+#:
+#: Not fixed at Module 08's source, for the reason Module 13 gave:
+#: renaming a feature invalidates every stored `feature_schema_version`
+#: checksum.
+SUPPRESSED_INPUTS: dict[str, str] = {
+    "volatility_contraction_onset": "volatility_compression",
 }
 
 MODEL_INPUTS: tuple[str, ...] = tuple(
@@ -146,10 +172,16 @@ class TargetModelV1:
         return _saturate(depth, self.thresholds.decline_saturation)
 
     def _stabilization(self, frame: pd.DataFrame) -> pd.Series:
-        """The decline losing force: rarer new lows, contracting volatility."""
-        rarer_lows = _saturate(frame["downside_momentum_reduction"], 1.0)
-        contracting = _saturate(1.0 - frame["volatility_contraction_onset"], 1.0)
-        return _mean_available([rarer_lows, contracting])
+        """The decline losing force: new lows becoming rarer.
+
+        One reading, not two. This component used to average in a
+        contracting-volatility term computed from
+        `volatility_contraction_onset` — which is the same series
+        `_consolidation` reads as `volatility_compression`, so the pair
+        double-counted one measurement into `quality`. See
+        `SUPPRESSED_INPUTS`.
+        """
+        return _saturate(frame["downside_momentum_reduction"], 1.0)
 
     def _consolidation(self, frame: pd.DataFrame) -> pd.Series:
         """Coiling: volatility compressed, range tight relative to price."""

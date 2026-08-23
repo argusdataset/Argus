@@ -89,8 +89,8 @@ DUPLICATE_FEATURES: dict[str, str] = {
 #: Features target-model-v1 reads inside its own `quality`, mirrored here
 #: so this module can check itself against them. Two of its four internal
 #: sub-components — `prior_decline` (`peak_to_trough_decline`) and
-#: `stabilization` (`downside_momentum_reduction`,
-#: `volatility_contraction_onset`) — already cover the prior decline.
+#: `stabilization` (`downside_momentum_reduction`) — already cover the
+#: prior decline.
 #:
 #: This is why the Module 13 brief's open 10% was resolved by
 #: redistribution rather than by an eighth "prior decline" component: that
@@ -100,7 +100,6 @@ DUPLICATE_FEATURES: dict[str, str] = {
 TARGET_MODEL_INTERNAL_FEATURES: tuple[str, ...] = (
     "peak_to_trough_decline",
     "downside_momentum_reduction",
-    "volatility_contraction_onset",
     "volatility_compression",
     "normalized_range_width",
     "volume_expansion",

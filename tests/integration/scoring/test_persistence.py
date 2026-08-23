@@ -24,6 +24,21 @@ from tests.unit.scoring.factories import adequate, insufficient, scoring_inputs
 STORED_PRECISION = 0.001
 
 
+def _raw_row(signal, lineage) -> dict:
+    """The identity columns only, for an insert that bypasses the writer."""
+    return {
+        "security_id": signal.security_id,
+        "event_time": signal.event_time,
+        "evidence_status": EvidenceStatus.INSUFFICIENT_EVIDENCE.value,
+        "data_snapshot_id": lineage.data_snapshot_id,
+        "scoring_configuration_id": lineage.scoring_configuration_id,
+        "target_model_version_id": lineage.target_model_version_id,
+        "feature_schema_version_id": lineage.feature_schema_version_id,
+        "universe_version_id": lineage.universe_version_id,
+        "detection_configuration_id": lineage.detection_configuration_id,
+    }
+
+
 def _scored(security_id, lineage, **kwargs):
     return score_candidate(
         scoring_inputs(security_id, cross=adequate(), **kwargs),
@@ -228,6 +243,89 @@ def test_a_repeated_write_does_not_create_a_second_row(connection, register, lin
         select(signals).where(signals.c.security_id == signal.security_id)
     ).all()
     assert len(count) == 1
+
+
+def test_the_database_itself_rejects_a_duplicate_scoring(
+    connection, register, lineage
+):
+    """Proof the protection is the index, not the writer's politeness.
+
+    Bypasses `write_signal` entirely and inserts the same identity twice
+    through raw SQL. Before migration 0005 this succeeded silently.
+    """
+    from psycopg import errors
+    from sqlalchemy.exc import IntegrityError
+
+    signal = _scored(register("DUPE"), lineage)
+    write_signal(connection, signal)
+
+    savepoint = connection.begin_nested()
+    with pytest.raises(IntegrityError) as raised:
+        connection.execute(signals.insert().values(_raw_row(signal, lineage)))
+    assert isinstance(raised.value.orig, errors.UniqueViolation)
+    savepoint.rollback()
+
+
+def test_the_uniqueness_index_does_not_block_corrections(
+    connection, register, lineage
+):
+    """The index is partial for exactly this reason.
+
+    A correction carries the same identity tuple by design — it is the
+    same computation, rescored — and points at the row it replaces. An
+    unconditional constraint would have made corrections impossible, so
+    the index covers only rows with no `supersedes_signal_id`.
+    """
+    signal = _scored(register("CORRIGE"), lineage)
+    original = write_signal(connection, signal)
+
+    first = write_signal(connection, signal, supersedes=original)
+    second = write_signal(connection, signal, supersedes=original)
+
+    assert first is not None
+    assert second is not None, "a second correction must also be permitted"
+    assert len({original, first, second}) == 3
+
+
+def test_the_detail_column_carries_the_layer_beneath_the_component_numbers(
+    connection, register, lineage
+):
+    """Module 03's comment promises a user can always see why a score is
+    what it is. The seven columns give the component values; this is where
+    the readings, the ramps, the unmeasured reasons and the calibration
+    status live."""
+    signal = _scored(register("DETAIL"), lineage)
+    signal_id = write_signal(connection, signal)
+    row = connection.execute(select(signals).where(signals.c.id == signal_id)).one()
+
+    detail = row.detail
+    assert detail["calibration_status"] == "UNVALIDATED_PLACEHOLDERS"
+    assert "NOT_YET_CALIBRATED" in detail["probability_status"]
+    assert detail["weight_coverage"] == pytest.approx(signal.weight_coverage)
+    assert set(detail["components"]) == set(COMPONENT_NAMES)
+    # The raw reading and what the ramp made of it, both recoverable.
+    historical = detail["components"]["volatility_structure"]
+    assert historical["inputs"]["atr_percentile"] is not None
+    assert historical["normalized"]["atr_percentile"] is not None
+    assert detail["confidence_assessment"]["factors"]["sample_sufficiency"]["value"] is not None
+
+
+def test_a_refusal_records_why_in_the_detail_column(connection, register, lineage):
+    """An INSUFFICIENT_EVIDENCE row has five NULL numbers. Without the
+    detail column the reason lived nowhere at all."""
+    signal = score_candidate(
+        scoring_inputs(register("WHYNOT"), cross=insufficient()),
+        as_of=AS_OF,
+        lineage=lineage,
+    )
+    signal_id = write_signal(connection, signal)
+    row = connection.execute(select(signals).where(signals.c.id == signal_id)).one()
+
+    assert row.detail["decision"] == "INSUFFICIENT_EVIDENCE"
+    assert "weight" in row.detail["verdict"]["reason"]
+    assert row.detail["verdict"]["detail"]["unmeasured_components"] == [
+        "historical_evidence"
+    ]
 
 
 def test_a_correction_is_a_new_row_pointing_at_the_original(connection, register, lineage):

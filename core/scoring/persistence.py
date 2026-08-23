@@ -1,26 +1,26 @@
-"""Writing signals, immutably, with a guard the schema does not provide.
+"""Writing signals, immutably, once per scoring.
 
 `signals` is append-only (Module 03's trigger rejects UPDATE and DELETE
 with SQLSTATE 23001), and a correction is a new row whose
 `supersedes_signal_id` points at the one it replaces. That much the schema
 enforces.
 
-What the schema does **not** have is a unique constraint. Every other
-result table in ARGUS has one — `feature_vectors`,
-`eligibility_check_results`, `historical_similarity_results`,
-`pending_material_events` — and each of those uses it with `ON CONFLICT DO
-NOTHING` so a re-run inserts what is missing and rewrites nothing. Here,
-re-running the same scan would silently produce a second identical row,
-and since the rows are immutable there would then be no way to tell which
-one a downstream decision cited.
+Uniqueness is the database's job, as it is for every other result table.
+Migration 0005 added a **partial** unique index on the tuple that
+identifies one scoring of one candidate — `(security_id, event_time,
+data_snapshot_id, scoring_configuration_id)` — restricted to rows with no
+`supersedes_signal_id`. `write_signal` inserts with `ON CONFLICT DO
+NOTHING` against it, matching Modules 05, 08, 09, 11 and 12.
 
-So `write_signal` checks before inserting on the tuple that identifies one
-scoring of one candidate — `(security_id, event_time, data_snapshot_id,
-scoring_configuration_id)`. This is a read-then-insert guard rather than a
-database constraint, which means it is not race-proof: two concurrent
-writers can both pass the check. That is a real limitation and the right
-fix is a migration adding the constraint, which is Module 03's call and
-is flagged in the module README rather than made here.
+Partial, because a correction is deliberately a second row carrying the
+same identity and pointing at the row it replaces. An unconditional
+constraint would make corrections impossible; this one constrains only
+the uncorrected originals.
+
+Module 13 originally shipped a read-then-insert guard here, which closed
+the ordinary case but was not race-proof — two concurrent writers could
+both pass the check before either inserted. That guard is gone; the index
+does the work now.
 
 Gated candidates write nothing. See `gating.py` on why an
 `INSUFFICIENT_EVIDENCE` row would be a false statement for them.
@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Connection
 
 from core.scoring.components import COMPONENT_NAMES
@@ -39,14 +39,18 @@ from core.scoring.config import stored_probability_definition
 from core.scoring.engine import ScoredSignal
 from infra.db.schema.intelligence import signals
 
-#: The tuple that identifies one scoring of one candidate. Not a database
-#: constraint — see the module docstring.
+#: The tuple that identifies one scoring of one candidate, matching the
+#: `uq_signals_identity` partial unique index from migration 0005.
 IDENTITY_COLUMNS: tuple[str, ...] = (
     "security_id",
     "event_time",
     "data_snapshot_id",
     "scoring_configuration_id",
 )
+
+#: The index's predicate, repeated here because `ON CONFLICT` has to name
+#: it to infer a partial index.
+IDENTITY_PREDICATE = signals.c.supersedes_signal_id.is_(None)
 
 
 class SignalNotPersistable(ValueError):
@@ -62,9 +66,13 @@ def write_signal(
     """Persist one signal. Returns its ID, or None if it already existed.
 
     `supersedes` records a correction: the new row points at the original,
-    which stays exactly as written. A correction is always a new row, so
-    the identity guard is deliberately not applied to it — superseding is
-    the one legitimate reason for a second row with the same identity.
+    which stays exactly as written. The unique index does not apply to it
+    — its predicate covers only rows with no `supersedes_signal_id` —
+    because superseding is the one legitimate reason for a second row
+    carrying the same identity.
+
+    Returns None when the row was already there, which is how a caller
+    tells "written" from "already recorded". Both are success.
     """
     if not signal.writes_signal:
         raise SignalNotPersistable(
@@ -73,14 +81,16 @@ def write_signal(
             "when in fact the evidence says the setup is over."
         )
 
-    if supersedes is None:
-        existing = _existing_id(connection, signal)
-        if existing is not None:
-            return None
-
-    return connection.execute(
-        signals.insert().values(_row(signal, supersedes)).returning(signals.c.id)
-    ).scalar_one()
+    statement = (
+        insert(signals)
+        .values(_row(signal, supersedes))
+        .on_conflict_do_nothing(
+            index_elements=list(IDENTITY_COLUMNS),
+            index_where=IDENTITY_PREDICATE,
+        )
+        .returning(signals.c.id)
+    )
+    return connection.execute(statement).scalar_one_or_none()
 
 
 def write_signals(connection: Connection, results: list[ScoredSignal]) -> list[UUID]:
@@ -100,20 +110,6 @@ def write_signals(connection: Connection, results: list[ScoredSignal]) -> list[U
     return written
 
 
-def _existing_id(connection: Connection, signal: ScoredSignal) -> UUID | None:
-    row = _row(signal, None)
-    return connection.execute(
-        select(signals.c.id)
-        .where(
-            and_(
-                *(signals.c[column] == row[column] for column in IDENTITY_COLUMNS),
-                signals.c.supersedes_signal_id.is_(None),
-            )
-        )
-        .limit(1)
-    ).scalar_one_or_none()
-
-
 def _row(signal: ScoredSignal, supersedes: UUID | None) -> dict[str, Any]:
     # One column per component, by name. The seven components and the
     # seven `component_*` columns correspond exactly, which is what lets a
@@ -131,6 +127,7 @@ def _row(signal: ScoredSignal, supersedes: UUID | None) -> dict[str, Any]:
         # is present and the absence is unambiguous.
         "probability": signal.probability,
         "probability_definition": stored_probability_definition(),
+        "detail": _detail(signal),
         **components,
         **{
             name: getattr(signal.lineage, name)
@@ -144,4 +141,35 @@ def _row(signal: ScoredSignal, supersedes: UUID | None) -> dict[str, Any]:
             )
         },
         "supersedes_signal_id": supersedes,
+    }
+
+
+def _detail(signal: ScoredSignal) -> dict[str, Any]:
+    """Everything beneath the seven stored component numbers.
+
+    The seven `component_*` columns say *what* each component scored; this
+    says why — the raw readings, what each ramp made of them, which
+    components could not be measured and for what reason, how much of the
+    weight was measurable, and the configuration's calibration status.
+    Module 03's comment on the table promises a user can always see why a
+    score is what it is; the columns alone do not keep that promise.
+
+    Deliberately not the whole of `as_dict()`: the five numbers and the
+    lineage are already columns, and storing them twice would create two
+    places for them to disagree.
+    """
+    return {
+        "decision": signal.decision.value,
+        "components": {
+            name: signal.components[name].as_dict()
+            for name in COMPONENT_NAMES
+            if name in signal.components
+        },
+        "confidence_assessment": (
+            signal.confidence_assessment.as_dict() if signal.confidence_assessment else None
+        ),
+        "weight_coverage": signal.weight_coverage,
+        "verdict": signal.verdict.as_dict() if signal.verdict else None,
+        "probability_status": signal.probability_status,
+        "calibration_status": signal.calibration_status,
     }

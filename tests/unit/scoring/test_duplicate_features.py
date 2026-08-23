@@ -113,16 +113,18 @@ def test_volatility_structure_reads_three_distinct_signals(panel):
             assert not frames[first].equals(frames[second])
 
 
-def test_the_target_model_reads_both_names_and_that_is_recorded():
-    """The finding this module cannot fix, recorded where it is visible.
+def test_the_target_model_no_longer_reads_both_names():
+    """The Module 13 finding, now fixed upstream and guarded from here.
 
-    target-model-v1 reads `volatility_contraction_onset` in its
+    target-model-v1 used to read `volatility_contraction_onset` in its
     `stabilization` sub-component and `volatility_compression` in its
-    `consolidation` sub-component, so one signal enters its `quality`
-    twice. That happens inside Module 10 and flows into the largest single
-    share of `argus_score`. This module cannot fix it — the target model's
-    internals are Module 10's — but it can refuse to pretend the situation
-    is clean.
+    `consolidation` sub-component, so one measurement entered its
+    `quality` twice — and that quality is the largest single share of
+    `argus_score`. Module 14 removed the stabilization reading.
+
+    Asserted from here as well as from Module 10's own tests because this
+    is the module that has to live with the consequence: nothing else
+    would notice if the suppressed name crept back into the model.
     """
     from core.market_state.target_model_matching.models.target_model_v1.model import (
         COMPONENT_INPUTS,
@@ -130,5 +132,20 @@ def test_the_target_model_reads_both_names_and_that_is_recorded():
 
     reads = {name for names in COMPONENT_INPUTS.values() for name in names}
 
-    assert {"volatility_contraction_onset", "volatility_compression"} <= reads
+    assert "volatility_contraction_onset" not in reads
+    assert "volatility_compression" in reads
     assert reads <= set(TARGET_MODEL_INTERNAL_FEATURES)
+    # And no feature is read by two sub-components either, which is the
+    # general form of the same mistake.
+    read_lists = [name for names in COMPONENT_INPUTS.values() for name in names]
+    assert len(read_lists) == len(set(read_lists))
+
+
+def test_the_two_modules_agree_on_which_name_is_suppressed():
+    """Two independent declarations of one fact drift silently. This is
+    what stops them."""
+    from core.market_state.target_model_matching.models.target_model_v1.model import (
+        SUPPRESSED_INPUTS,
+    )
+
+    assert SUPPRESSED_INPUTS == DUPLICATE_FEATURES
