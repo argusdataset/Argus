@@ -1,0 +1,110 @@
+"""One error shape, with machine-readable codes.
+
+## Why the codes exist
+
+This is the first module whose caller cannot read the modules behind it.
+A consumer handling a failure has two questions — *can I retry* and *is
+this my fault* — and an HTTP status alone answers neither well. 404 is
+"this ticker does not exist" and also "this ticker exists but ARGUS has
+never ingested it", which want different messages in a UI.
+
+So every error carries a stable `code` string. The status tells a proxy
+what to do; the code tells the client what to say.
+
+## The envelope is the same shape every time
+
+```json
+{"error": {"code": "SECURITY_NOT_FOUND",
+           "message": "No security is trading as 'ZZZZ'.",
+           "detail": {"ticker": "ZZZZ"}}}
+```
+
+`message` is written for a human reading a log or a toast. `detail` is
+structured, optional, and never required for the client to function —
+a consumer that only ever reads `code` is using this correctly.
+
+## What is not an error
+
+An empty result is not an error. A security with no ingested fundamentals
+returns 200 with the statements block explicitly marked unavailable and
+the reason named — see `schemas.py`. Modelling "we have nothing for this"
+as a 404 would make a consumer unable to distinguish it from a bad
+ticker, which is the same conflation Module 18's report warned about for
+scan availability.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+__all__ = [
+    "IDENTITY_REQUIRED",
+    "IDENTITY_UNAVAILABLE",
+    "INVALID_REQUEST",
+    "NOT_FOUND",
+    "SECURITY_NOT_FOUND",
+    "WATCHLIST_LIMIT_REACHED",
+    "WATCHLIST_NAME_TAKEN",
+    "WATCHLIST_NOT_FOUND",
+    "TerminalError",
+    "error_payload",
+]
+
+#: The ticker resolved to nothing. Distinct from "resolved, but ARGUS has
+#: no data for it", which is a 200 with an unavailable block.
+SECURITY_NOT_FOUND = "SECURITY_NOT_FOUND"
+#: A watchlist that does not exist, or is not this user's. Deliberately
+#: the same code for both — see `watchlists.py` on why a caller must not
+#: be able to distinguish them.
+WATCHLIST_NOT_FOUND = "WATCHLIST_NOT_FOUND"
+WATCHLIST_NAME_TAKEN = "WATCHLIST_NAME_TAKEN"
+WATCHLIST_LIMIT_REACHED = "WATCHLIST_LIMIT_REACHED"
+#: No identity was supplied for a user-scoped endpoint.
+IDENTITY_REQUIRED = "IDENTITY_REQUIRED"
+#: Identity was supplied but this deployment has no way to verify it —
+#: the stub is off and Module 22 is not built. A 501, not a 401: the
+#: caller did nothing wrong, the server cannot answer yet.
+IDENTITY_UNAVAILABLE = "IDENTITY_UNAVAILABLE"
+INVALID_REQUEST = "INVALID_REQUEST"
+NOT_FOUND = "NOT_FOUND"
+
+
+class TerminalError(Exception):
+    """An error with a stable code, carried to the HTTP layer intact.
+
+    Raised by the service functions, which know nothing about HTTP.
+    `app.py` installs the one handler that turns these into responses, so
+    a service module never imports a status code and the envelope is
+    built in exactly one place.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status: int = 400,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+        self.detail = detail or {}
+
+    def payload(self) -> dict[str, Any]:
+        return error_payload(self.code, self.message, self.detail)
+
+
+def error_payload(code: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The envelope. One function, so every error in this service matches."""
+    return {"error": {"code": code, "message": message, "detail": detail or {}}}
+
+
+def security_not_found(ticker: str) -> TerminalError:
+    return TerminalError(
+        SECURITY_NOT_FOUND,
+        f"No security is trading as {ticker!r}.",
+        status=404,
+        detail={"ticker": ticker},
+    )

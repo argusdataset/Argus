@@ -69,6 +69,10 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     "canonical_ohlcv",
     "canonical_fundamentals",
     "canonical_corporate_actions",
+    # Added with the table itself in migration 0010 (Module 19). A
+    # published article is a historical fact like a bar or a filing: a
+    # correction is a new article, and the original stays as published.
+    "canonical_news",
     # Event streams and written results.
     "market_state_transitions",
     "eligibility_check_results",

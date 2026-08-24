@@ -20,6 +20,13 @@ dependencies = [
     "httpx>=0.27",
     "numpy>=1.26",
     "pandas>=2.2",
+    # Module 19's Terminal API. Chosen over the alternatives because the
+    # project already depends on Pydantic 2 and httpx and already
+    # configures pytest-asyncio — the skeleton was assembled expecting an
+    # async HTTP service tested with httpx, and FastAPI serves the
+    # response models in services/terminal/schemas.py and documents them
+    # from the same definition rather than a second one that can drift.
+    "fastapi>=0.115",
 ]
 
 [project.optional-dependencies]
