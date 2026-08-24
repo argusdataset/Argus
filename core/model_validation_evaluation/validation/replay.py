@@ -316,7 +316,7 @@ def replay(
     signals: list[ScoredSignal] = []
     try:
         for as_of in dates:
-            scan_result, scan_signals = _replay_one_date(
+            scan_result, scan_signals = scan_one_date(
                 connection,
                 as_of=as_of,
                 request=request,
@@ -350,15 +350,30 @@ def replay(
 # --------------------------------------------------------------------------
 
 
-def _replay_one_date(
+def scan_one_date(
     connection: Connection,
     *,
     as_of: datetime,
     request: ReplayRequest,
     config: ValidationConfig,
     modules: ModuleConfigs,
-    analogue_counter: Any,
+    analogue_counter: Any = None,
 ) -> tuple[ScanDateResult, list[ScoredSignal]]:
+    """One scan date, start to finish: Modules 06-15 over one universe.
+
+    Public because it is also Module 18's entry point. This function is
+    the live scanner — called with `as_of=now` and one date instead of a
+    list — which is what the dual-mode discipline every module has
+    followed since Module 07 bought. Module 18 wraps it in scheduling,
+    retry and failure policy; it does not reimplement any of what happens
+    below, and nothing here knows or cares which caller it has.
+
+    Raises on any failure, deliberately. That is the right policy for a
+    batch replay a human is watching, and the wrong one for an unattended
+    daily scan — so the recovery policy lives in the caller, where the
+    difference between "retry this" and "give up and say so" can be
+    decided by the caller that knows which it is.
+    """
     lineage = request.lineage
     universe = _universe_at(connection, request, as_of=as_of)
 

@@ -187,3 +187,32 @@ class HistoricalScanStatus(StrEnum):
     PENDING_REVIEW = "PENDING_REVIEW"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class LiveScanStatus(StrEnum):
+    """How one day's live scan ended (Module 18).
+
+    Deliberately more states than `ValidationRunStatus`, and the extra
+    ones are the whole difference between a batch job and an unattended
+    daily process. A batch replay has two interesting outcomes — it worked
+    or it did not, and a human is watching either way. A daily scan has
+    three distinct kinds of not-working, and conflating them is how a
+    scanner goes quietly dark:
+
+    - `DATA_NOT_READY` is not a failure. The market data for this date has
+      not arrived yet. The correct response is to wait and ask again, and
+      recording it as FAILED would train whoever reads these rows to
+      ignore FAILED.
+    - `COMPLETED_WITH_EXCLUSIONS` is not a success to be filed away
+      silently. The day's scan produced results, and some securities were
+      quarantined to get there. Reported as its own state so a security
+      that has been excluded every day for a month is visible.
+    - `FAILED` means the scan could not complete and retrying did not
+      help. This is the one that wants a human.
+    """
+
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    COMPLETED_WITH_EXCLUSIONS = "COMPLETED_WITH_EXCLUSIONS"
+    DATA_NOT_READY = "DATA_NOT_READY"
+    FAILED = "FAILED"

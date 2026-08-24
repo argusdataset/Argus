@@ -7,12 +7,22 @@ DDL-emit time, so the modules can be imported in any order.
 """
 
 from infra.db.metadata import metadata
-from infra.db.schema import canonical, identity, intelligence, setups, users, validation, versioning
+from infra.db.schema import (
+    canonical,
+    identity,
+    intelligence,
+    live_scanner,
+    setups,
+    users,
+    validation,
+    versioning,
+)
 
 __all__ = [
     "canonical",
     "identity",
     "intelligence",
+    "live_scanner",
     "metadata",
     "setups",
     "users",

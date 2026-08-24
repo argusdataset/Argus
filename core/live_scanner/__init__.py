@@ -1,1 +1,105 @@
-"""Scheduled orchestration of the Intelligence Core against current market data."""
+"""Live Scanner (Module 18): the pipeline on a schedule, unattended."""
+
+from core.live_scanner.catchup import (
+    CatchupPlan,
+    CatchupReport,
+    plan_catchup,
+    run_catchup,
+)
+from core.live_scanner.config import (
+    CALIBRATABLE,
+    KINDS,
+    OPERATIONAL,
+    STRUCTURAL,
+    ScannerConfig,
+    ScannerSetting,
+    ScannerSettings,
+)
+from core.live_scanner.daily import DailyReport, run_daily
+from core.live_scanner.failures import FailureClass, classify_failure, describe_failure
+from core.live_scanner.readiness import ReadinessReport, check_readiness
+from core.live_scanner.results import (
+    ScanResults,
+    scan_results,
+    setups_opened_by_scan,
+    signals_for_scan,
+)
+from core.live_scanner.runs import (
+    TERMINAL_SUCCESS,
+    ScanRun,
+    completed_dates,
+    finish_run,
+    latest_run,
+    next_attempt,
+    record_not_ready,
+    run_history,
+    runs_by_status,
+    start_run,
+)
+from core.live_scanner.scanner import (
+    ConnectionFactory,
+    Excluded,
+    ScanOutcome,
+    isolate_failing_securities,
+    run_scan,
+)
+from core.live_scanner.schedule import (
+    ScanWindow,
+    as_of_for,
+    due_at,
+    is_due,
+    next_scan_time,
+    pending_trading_days,
+    scan_date_for,
+    window_for,
+    within_readiness_window,
+)
+
+__all__ = [
+    "CALIBRATABLE",
+    "KINDS",
+    "OPERATIONAL",
+    "STRUCTURAL",
+    "TERMINAL_SUCCESS",
+    "CatchupPlan",
+    "CatchupReport",
+    "ConnectionFactory",
+    "DailyReport",
+    "Excluded",
+    "FailureClass",
+    "ReadinessReport",
+    "ScanOutcome",
+    "ScanResults",
+    "ScanRun",
+    "ScanWindow",
+    "ScannerConfig",
+    "ScannerSetting",
+    "ScannerSettings",
+    "as_of_for",
+    "check_readiness",
+    "classify_failure",
+    "completed_dates",
+    "describe_failure",
+    "due_at",
+    "finish_run",
+    "is_due",
+    "isolate_failing_securities",
+    "latest_run",
+    "next_attempt",
+    "next_scan_time",
+    "pending_trading_days",
+    "plan_catchup",
+    "record_not_ready",
+    "run_catchup",
+    "run_daily",
+    "run_history",
+    "run_scan",
+    "runs_by_status",
+    "scan_date_for",
+    "scan_results",
+    "setups_opened_by_scan",
+    "signals_for_scan",
+    "start_run",
+    "within_readiness_window",
+    "window_for",
+]

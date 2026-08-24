@@ -18,6 +18,7 @@ from core.model_validation_evaluation.validation.replay import (
     compute_features_in_chunks,
     replay,
     scan_dates,
+    scan_one_date,
     scoring_assessment,
 )
 from core.model_validation_evaluation.validation.review import (
@@ -92,6 +93,7 @@ __all__ = [
     "require_consistent_versions",
     "review_history",
     "scan_dates",
+    "scan_one_date",
     "scoring_assessment",
     "start_run",
 ]
