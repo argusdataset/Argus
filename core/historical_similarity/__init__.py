@@ -39,7 +39,9 @@ from core.historical_similarity.statistics import (
     Interval,
     OutcomeStatistics,
     SampleSufficiency,
+    mean_confidence_interval,
     summarize,
+    wilson_interval,
 )
 
 __all__ = [
@@ -67,10 +69,12 @@ __all__ = [
     "find_similar_setups",
     "insufficient",
     "load_cases",
+    "mean_confidence_interval",
     "load_same_asset_history",
     "metric_features",
     "pairwise_distances",
     "publish_similarity_configuration",
     "summarize",
+    "wilson_interval",
     "write_similarity_results",
 ]

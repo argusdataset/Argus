@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Connection
 
@@ -91,6 +92,32 @@ def write_signal(
         .returning(signals.c.id)
     )
     return connection.execute(statement).scalar_one_or_none()
+
+
+def resolve_signal_id(connection: Connection, signal: ScoredSignal) -> UUID | None:
+    """The ID of the stored row for this signal, whoever wrote it.
+
+    `write_signal` returns None when the row was already there, which is
+    correct — "written" and "already recorded" are different facts. But
+    migration 0007 gave `setups` a `qualifying_signal_id` FK, and a
+    caller that needs that join key needs an ID either way. Looks the row
+    up by the same identity tuple the unique index is built on, and by
+    the same predicate: an original, not a correction.
+
+    None means no row, which for a gated candidate is the correct answer
+    rather than a failure — see `write_signal`.
+    """
+    return connection.execute(
+        select(signals.c.id)
+        .where(
+            signals.c.security_id == signal.security_id,
+            signals.c.event_time == signal.event_time,
+            signals.c.data_snapshot_id == signal.lineage.data_snapshot_id,
+            signals.c.scoring_configuration_id == signal.lineage.scoring_configuration_id,
+            IDENTITY_PREDICATE,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def write_signals(connection: Connection, results: list[ScoredSignal]) -> list[UUID]:

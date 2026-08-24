@@ -147,3 +147,30 @@ def assessment_evidence(assessment: TargetModelAssessment | None) -> dict[str, A
         "supports_advancement": assessment.supports_advancement,
         "unavailable_inputs": list(assessment.unavailable_inputs),
     }
+
+
+def assessment_from_evidence(
+    security_id: UUID, evidence: dict[str, Any] | None
+) -> TargetModelAssessment | None:
+    """Rebuild an assessment from what `assessment_evidence` stored.
+
+    The inverse lives here for the same reason the forward direction
+    does: the storage shape is the engine's concern, and a caller
+    reconstructing it by hand would be a second place for the shape to
+    drift. Module 17's replay needs this because `StateAssignment` keeps
+    the serialized form rather than the object, and Module 13's
+    `pattern_quality` component reads the object — without it, a quarter
+    of every replayed score would be silently unavailable.
+
+    Returns None for a state the model does not cover, which is the same
+    thing `assess()` returns and means the same thing.
+    """
+    if not evidence or not evidence.get("assessed"):
+        return None
+    return TargetModelAssessment(
+        security_id=security_id,
+        quality=evidence.get("quality"),
+        components=dict(evidence.get("components") or {}),
+        supports_advancement=bool(evidence.get("supports_advancement", False)),
+        unavailable_inputs=tuple(evidence.get("unavailable_inputs") or ()),
+    )

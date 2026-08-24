@@ -46,7 +46,12 @@ from core.scoring.gating import (
     pre_scoring_gates,
     weight_coverage,
 )
-from core.scoring.persistence import SignalNotPersistable, write_signal, write_signals
+from core.scoring.persistence import (
+    SignalNotPersistable,
+    resolve_signal_id,
+    write_signal,
+    write_signals,
+)
 
 __all__ = [
     "BRIEF_SHARES",
@@ -82,6 +87,7 @@ __all__ = [
     "score_candidates",
     "stored_probability_definition",
     "weight_coverage",
+    "resolve_signal_id",
     "write_signal",
     "write_signals",
 ]

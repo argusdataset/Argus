@@ -238,11 +238,11 @@ def _distribution(values: pd.Series) -> Distribution | None:
         count=len(array),
         percentiles={p: float(np.percentile(array, p)) for p in REPORTED_PERCENTILES},
         mean=mean,
-        mean_interval=_mean_interval(array),
+        mean_interval=mean_confidence_interval(array),
     )
 
 
-def _mean_interval(array: np.ndarray) -> Interval:
+def mean_confidence_interval(array: np.ndarray) -> Interval:
     """95% interval for a mean. Degenerate for n=1, and honestly so."""
     n = len(array)
     if n < 2:
@@ -266,10 +266,10 @@ def _failure_rate(outcomes: pd.DataFrame) -> tuple[float | None, Interval | None
 
     failures = int(_status_mask(resolved, set(FAILURE_STATUSES)).sum())
     rate = failures / total
-    return rate, _wilson_interval(failures, total), total
+    return rate, wilson_interval(failures, total), total
 
 
-def _wilson_interval(successes: int, total: int) -> Interval:
+def wilson_interval(successes: int, total: int) -> Interval:
     """Wilson score interval for a proportion.
 
     Chosen over the normal approximation because the latter misbehaves

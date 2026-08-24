@@ -314,11 +314,11 @@ def test_the_re_derived_threshold_matches_its_stated_reasoning():
     data, so the arithmetic behind it is checkable — and if someone
     changes the number without changing the reasoning, this fails.
     """
-    from core.historical_similarity.statistics import _wilson_interval
+    from core.historical_similarity.statistics import wilson_interval
 
-    at_five = _wilson_interval(2, 5).width
-    at_derived = _wilson_interval(RE_DERIVED_MIN_ANALOGUES // 2, RE_DERIVED_MIN_ANALOGUES).width
-    at_thirty = _wilson_interval(15, 30).width
+    at_five = wilson_interval(2, 5).width
+    at_derived = wilson_interval(RE_DERIVED_MIN_ANALOGUES // 2, RE_DERIVED_MIN_ANALOGUES).width
+    at_thirty = wilson_interval(15, 30).width
 
     assert at_five > 0.6, "a 5-case proportion says essentially nothing"
     assert at_derived < 0.55

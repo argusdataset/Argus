@@ -82,6 +82,26 @@ setups = Table(
         ForeignKey("universe_version.id", ondelete="RESTRICT"),
         nullable=False,
     ),
+    # Added in migration 0007. Module 15 found this missing and had to
+    # take it from the caller per-call; for a replay spanning years and
+    # several schema versions, "the caller remembered correctly" is not a
+    # record of anything.
+    Column(
+        "feature_schema_version_id",
+        UUID(as_uuid=True),
+        ForeignKey("feature_schema_version.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    # The signals row that cleared the qualification bar, added in
+    # migration 0007. NULL means "not qualified yet" — a fact about the
+    # setup, not a missing value — and is the normal case, because
+    # detection deliberately does not require a score.
+    Column(
+        "qualifying_signal_id",
+        UUID(as_uuid=True),
+        ForeignKey("signals.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
     # A terminal marker, NOT a status column: NULL while the setup is
     # open, set to the terminal event's occurred_at when one is written.
     # It exists so the partial unique index below has a predicate to use —
@@ -103,6 +123,7 @@ setups = Table(
         postgresql_where=text("concluded_at IS NULL"),
     ),
     Index("ix_setups_security_time", "security_id", "detected_at"),
+    Index("ix_setups_qualifying_signal", "qualifying_signal_id"),
     comment="A detected setup. Current lifecycle status is derived from setup_events.",
 )
 
@@ -145,7 +166,6 @@ setup_outcomes = Table(
         UUID(as_uuid=True),
         ForeignKey("setups.id", ondelete="RESTRICT"),
         nullable=False,
-        unique=True,
     ),
     # Never forced into a binary win/loss — EXPIRED, INVALIDATED and
     # NO_VALID_OUTCOME are first-class results, not failures in disguise.
@@ -191,6 +211,12 @@ setup_outcomes = Table(
         nullable=False,
     ),
     Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # One outcome per setup **per snapshot**, not per setup. Migration
+    # 0007 explains the choice at length; the short version is that
+    # data_snapshot_id already pins the PIT cutoff and the success
+    # criterion, so re-running under a revised criterion is a different
+    # legitimate answer rather than a correction of the first one.
+    UniqueConstraint("setup_id", "data_snapshot_id", name="uq_setup_outcomes_setup_snapshot"),
     Index("ix_setup_outcomes_snapshot", "data_snapshot_id"),
     Index("ix_setup_outcomes_status", "outcome_status"),
     Index("ix_setup_outcomes_false_positive", "false_positive_type"),

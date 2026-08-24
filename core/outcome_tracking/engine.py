@@ -13,13 +13,18 @@ and Module 12 for risk: `as_of` is a plain argument, it bounds every read,
 and an adversarial test proves it reaches the loader rather than being
 carried decoratively.
 
-## One outcome per setup, written once
+## One outcome per setup *per snapshot*, written once
 
-`setup_outcomes` is unique on `setup_id` and guarded against DELETE. A
-re-run inserts nothing rather than raising: recomputing an outcome under a
-*different* snapshot is a legitimate thing to want, but it is a new
-snapshot's question, and silently overwriting the row a Module 17 run
-already read would make that run unreproducible.
+`setup_outcomes` is unique on `(setup_id, data_snapshot_id)` since
+migration 0007, and guarded against DELETE. A re-run under the same
+snapshot inserts nothing rather than raising, because silently overwriting
+the row a Module 17 run already read would make that run unreproducible.
+
+Under a *different* snapshot it computes and writes a new row, which is
+the point of 0007: Module 15's success criterion (+10% / -5% / 60 days) is
+an admitted placeholder, and relabelling the dataset when it is revised
+means publishing a new snapshot and re-running. The old row stays exactly
+as written — it is still the right answer to its own question.
 
 ## Failures get the same code path as successes
 
@@ -130,20 +135,23 @@ def compute_case(
         benchmark_security_id=benchmark_security_id,
     )
 
-    # No schema version, no feature block. A setup's `setups` row does not
-    # record which feature schema described it — flagged in the module
-    # report — so the caller supplies it, and its absence produces an
-    # honestly empty metric block rather than a lookup against the wrong
-    # version's vectors.
+    # Migration 0007 gave `setups` its own `feature_schema_version_id`, so
+    # the setup states which schema described it rather than the caller
+    # having to remember — which for a replay spanning several schema
+    # versions was never a record of anything. The parameter survives as
+    # an explicit override for a caller deliberately reading a historical
+    # setup through a newer schema; None now means "use the setup's own",
+    # not "produce an empty metric block".
+    schema_version = feature_schema_version_id or row.feature_schema_version_id
     features = (
         None
-        if feature_schema_version_id is None
+        if schema_version is None
         else _features_at_detection(
             connection,
             security_id,
             detected_at=stages.detected_at,
             as_of=as_of,
-            feature_schema_version_id=feature_schema_version_id,
+            feature_schema_version_id=schema_version,
         )
     )
 
@@ -194,6 +202,7 @@ def compute_case(
             "target_model_version_id": str(row.target_model_version_id),
             "detection_configuration_id": str(row.detection_configuration_id),
             "universe_version_id": str(row.universe_version_id),
+            "feature_schema_version_id": (str(schema_version) if schema_version else None),
             "data_snapshot_id": str(data_snapshot_id),
             "outcome_configuration": config.version_label(),
         },
@@ -203,7 +212,11 @@ def compute_case(
 def record_outcome(
     connection: Connection, case: CaseRecord, *, data_snapshot_id: UUID
 ) -> UUID | None:
-    """Write one case's outcome row. None if one already exists.
+    """Write one case's outcome row. None if this snapshot already has one.
+
+    "Already exists" is per `(setup_id, data_snapshot_id)`, not per setup:
+    a recomputation under a revised criterion travels with a new snapshot
+    and writes a new row alongside the old one.
 
     Every column is populated for every status. A `NO_VALID_OUTCOME` row
     carries real fields explaining why rather than being absent — the
@@ -236,7 +249,7 @@ def record_outcome(
             ),
             data_snapshot_id=data_snapshot_id,
         )
-        .on_conflict_do_nothing(index_elements=["setup_id"])
+        .on_conflict_do_nothing(index_elements=["setup_id", "data_snapshot_id"])
         .returning(setup_outcomes.c.id)
     )
     return connection.execute(statement).scalar_one_or_none()
@@ -253,15 +266,28 @@ def process_concluded_setups(
 ) -> OutcomeReport:
     """Compute and record outcomes for every setup concluded by `as_of`.
 
-    Skips setups that already have an outcome row rather than recomputing
-    them: the stored row cites a snapshot, and a Module 17 run that read
-    it must keep reading the same thing.
+    Skips setups that already have an outcome row **under this snapshot**
+    rather than recomputing them: that row cites this snapshot, and a
+    Module 17 run that read it must keep reading the same thing. A setup
+    labelled under a different snapshot is not skipped — relabelling the
+    dataset under a revised criterion is a new snapshot's run.
     """
     config = config or OutcomeConfig()
     pending = (
         connection.execute(
             select(setups.c.id)
-            .outerjoin(setup_outcomes, setup_outcomes.c.setup_id == setups.c.id)
+            # Scoped to this snapshot, not to the setup: a setup already
+            # labelled under an earlier snapshot is still pending under a
+            # revised one, which is exactly what migration 0007 exists to
+            # allow. Before 0007 this join could not be written, and a
+            # revised criterion silently relabelled nothing.
+            .outerjoin(
+                setup_outcomes,
+                and_(
+                    setup_outcomes.c.setup_id == setups.c.id,
+                    setup_outcomes.c.data_snapshot_id == data_snapshot_id,
+                ),
+            )
             .where(
                 and_(
                     setups.c.concluded_at.is_not(None),

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Numeric,
     Table,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -136,6 +137,13 @@ historical_scan_status = Table(
         ForeignKey("model_validation_runs.id", ondelete="RESTRICT"),
         nullable=False,
     ),
+    # Monotonic per run, so the current status is unambiguous even when
+    # two assignments share a timestamp. Added in migration 0008, which
+    # explains why `assigned_at` alone could not answer the question this
+    # table's own comment promises to answer: `now()` is transaction start
+    # time, and the id tiebreak is a random UUID. Same mechanism as
+    # `setup_events.sequence_number`, for the same reason.
+    Column("sequence_number", Integer, nullable=False),
     Column(
         "status",
         pg_enum(HistoricalScanStatus, "historical_scan_status_enum"),
@@ -146,6 +154,10 @@ historical_scan_status = Table(
     Column("assigned_by_user_id", UUID(as_uuid=True), ForeignKey("users.id"), nullable=True),
     Column("assigned_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("note", Text, nullable=True),
-    Index("ix_scan_status_run", "model_validation_run_id", "assigned_at"),
+    UniqueConstraint(
+        "model_validation_run_id", "sequence_number", name="uq_scan_status_run_sequence"
+    ),
+    CheckConstraint("sequence_number >= 0", name="sequence_non_negative"),
+    Index("ix_scan_status_run", "model_validation_run_id", "sequence_number"),
     comment="Append-only review-gate history. Current status is the latest row per run.",
 )

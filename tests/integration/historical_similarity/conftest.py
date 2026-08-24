@@ -88,9 +88,7 @@ def version_ids(connection: Connection) -> dict[str, UUID]:
         # Migration 0006 made setup_outcomes.data_snapshot_id NOT NULL:
         # an outcome nobody can re-derive is the one result in ARGUS that
         # must not exist.
-        "snapshot": publish_similarity_configuration(
-            connection, SimilarityConfig(), as_of=AS_OF
-        ),
+        "snapshot": publish_similarity_configuration(connection, SimilarityConfig(), as_of=AS_OF),
     }
 
 
@@ -126,6 +124,7 @@ def make_case(
                 target_model_version_id=version_ids["target_model"],
                 detection_configuration_id=version_ids["detection"],
                 universe_version_id=version_ids["universe"],
+                feature_schema_version_id=schema_version_id,
                 # A case *is* a concluded setup — it has an outcome. Set
                 # explicitly so the fixture states that rather than
                 # leaving these looking permanently open, which migration

@@ -401,9 +401,7 @@ def test_the_expiry_windows_are_read_from_the_configuration(connection, register
 # --------------------------------------------------------------------------
 
 
-def test_the_database_rejects_a_second_open_setup_for_one_security(
-    connection, register, lineage
-):
+def test_the_database_rejects_a_second_open_setup_for_one_security(connection, register, lineage):
     """Not just resolved gracefully by application code — refused.
 
     Module 14 maintained this invariant in `_index_by_security` and
@@ -425,9 +423,7 @@ def test_the_database_rejects_a_second_open_setup_for_one_security(
     savepoint.rollback()
 
 
-def test_concluding_a_setup_frees_the_security_for_a_new_one(
-    connection, register, lineage
-):
+def test_concluding_a_setup_frees_the_security_for_a_new_one(connection, register, lineage):
     """The index is partial on `concluded_at IS NULL`, so a finished setup
     stops occupying its security's slot — which is what makes a second
     base on the same security a new setup rather than an impossibility."""
@@ -475,9 +471,7 @@ def test_the_terminal_marker_is_set_on_every_write_path(connection, register, li
     assert marker == AS_OF + timedelta(days=4)
 
 
-def test_the_marker_never_disagrees_with_the_derived_status(
-    connection, register, lineage, scored
-):
+def test_the_marker_never_disagrees_with_the_derived_status(connection, register, lineage, scored):
     """The projection rule, asserted.
 
     `concluded_at` is a projection of the event log, exactly as Module

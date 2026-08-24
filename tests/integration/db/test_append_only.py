@@ -62,13 +62,27 @@ def _seed_setup(engine: Engine) -> uuid.UUID:
             ),
             {"label": f"universe-test-{suffix}"},
         ).scalar_one()
+        # Migration 0007 made feature_schema_version_id NOT NULL on setups.
+        schema_id = conn.execute(
+            text(
+                "INSERT INTO feature_schema_version (version_label, definition, "
+                "content_checksum) VALUES (:label, '{}'::jsonb, 'sha') RETURNING id"
+            ),
+            {"label": f"features-test-{suffix}"},
+        ).scalar_one()
         return conn.execute(
             text(
                 "INSERT INTO setups (security_id, detected_at, target_model_version_id, "
-                "detection_configuration_id, universe_version_id) "
-                "VALUES (:sec, now(), :model, :det, :uni) RETURNING id"
+                "detection_configuration_id, universe_version_id, feature_schema_version_id) "
+                "VALUES (:sec, now(), :model, :det, :uni, :fsv) RETURNING id"
             ),
-            {"sec": security_id, "model": model_id, "det": detection_id, "uni": universe_id},
+            {
+                "sec": security_id,
+                "model": model_id,
+                "det": detection_id,
+                "uni": universe_id,
+                "fsv": schema_id,
+            },
         ).scalar_one()
 
 

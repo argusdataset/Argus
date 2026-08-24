@@ -93,9 +93,7 @@ def test_stabilization_no_longer_moves_when_the_compression_signal_moves(panel):
     from uuid import uuid4
 
     security_id = uuid4()
-    base = pd.DataFrame(
-        {name: [0.5] for name in MODEL_INPUTS}, index=pd.Index([security_id])
-    )
+    base = pd.DataFrame({name: [0.5] for name in MODEL_INPUTS}, index=pd.Index([security_id]))
     base["peak_to_trough_decline"] = -0.4
     shifted = base.copy()
     shifted["volatility_compression"] = 0.95

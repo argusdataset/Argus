@@ -35,6 +35,21 @@ introduce:
 
 Both are enforced in SQL rather than in Python, so a caller cannot forget
 one.
+
+## Which outcome row wins
+
+Migration 0007 changed `setup_outcomes` from one row per setup to one row
+per setup **per data snapshot**, so that an outcome can be recomputed when
+the success criterion is revised. This query's `DISTINCT ON (s.id)`
+previously leaned on the old uniqueness for determinism — it ordered only
+the feature vector, because the outcome could not be ambiguous.
+
+It can now, so the ordering names the outcome first: the most recently
+recorded one wins, with `o.id` breaking an exact `recorded_at` tie so the
+result is stable rather than merely usually stable. That is the right
+default for a similarity lookup — the latest labelling of history is the
+one ARGUS currently believes — and a caller wanting a specific snapshot's
+labelling wants a different query, not a different tiebreak.
 """
 
 from __future__ import annotations
@@ -90,7 +105,9 @@ _CASE_QUERY = """
      AND fv.availability_time <= s.detected_at
     WHERE o.recorded_at <= :as_of
       {security_clause}
-    ORDER BY s.id, fv.event_time DESC, fv.availability_time DESC
+    ORDER BY s.id,
+             o.recorded_at DESC, o.id DESC,
+             fv.event_time DESC, fv.availability_time DESC
 """
 
 

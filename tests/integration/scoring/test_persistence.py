@@ -245,9 +245,7 @@ def test_a_repeated_write_does_not_create_a_second_row(connection, register, lin
     assert len(count) == 1
 
 
-def test_the_database_itself_rejects_a_duplicate_scoring(
-    connection, register, lineage
-):
+def test_the_database_itself_rejects_a_duplicate_scoring(connection, register, lineage):
     """Proof the protection is the index, not the writer's politeness.
 
     Bypasses `write_signal` entirely and inserts the same identity twice
@@ -266,9 +264,7 @@ def test_the_database_itself_rejects_a_duplicate_scoring(
     savepoint.rollback()
 
 
-def test_the_uniqueness_index_does_not_block_corrections(
-    connection, register, lineage
-):
+def test_the_uniqueness_index_does_not_block_corrections(connection, register, lineage):
     """The index is partial for exactly this reason.
 
     A correction carries the same identity tuple by design — it is the
@@ -323,9 +319,7 @@ def test_a_refusal_records_why_in_the_detail_column(connection, register, lineag
 
     assert row.detail["decision"] == "INSUFFICIENT_EVIDENCE"
     assert "weight" in row.detail["verdict"]["reason"]
-    assert row.detail["verdict"]["detail"]["unmeasured_components"] == [
-        "historical_evidence"
-    ]
+    assert row.detail["verdict"]["detail"]["unmeasured_components"] == ["historical_evidence"]
 
 
 def test_a_correction_is_a_new_row_pointing_at_the_original(connection, register, lineage):

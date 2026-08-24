@@ -153,12 +153,21 @@ class CandidateObservation:
     `backward_transitions` is Module 10's own stored count, carried rather
     than recomputed; None means it was not read, and retreat detection is
     then skipped rather than guessed at.
+
+    `signal_id` is the `signals` row `signal` was persisted as, if the
+    caller already wrote it. It is the join key migration 0007 added to
+    `setups.qualifying_signal_id`, and it is optional because writing the
+    signal is the caller's step, not this module's — a caller that scores
+    without persisting still gets a correct lifecycle, just without the
+    join key. None therefore means "not supplied", and the column is left
+    NULL rather than being filled with a guess.
     """
 
     security_id: UUID
     state: MarketState | None = None
     signal: ScoredSignal | None = None
     backward_transitions: int | None = None
+    signal_id: UUID | None = None
 
     @classmethod
     def from_scoring(
@@ -167,12 +176,14 @@ class CandidateObservation:
         *,
         state: MarketState | None = None,
         backward_transitions: int | None = None,
+        signal_id: UUID | None = None,
     ) -> CandidateObservation:
         return cls(
             security_id=signal.security_id,
             state=state,
             signal=signal,
             backward_transitions=backward_transitions,
+            signal_id=signal_id,
         )
 
 
@@ -274,6 +285,11 @@ def open_setup(
             target_model_version_id=lineage.target_model_version_id,
             detection_configuration_id=lineage.detection_configuration_id,
             universe_version_id=lineage.universe_version_id,
+            # Migration 0007. `Lineage` has always carried this; until
+            # 0007 there was no column to put it in, so a later replay
+            # had to be told which schema version a historical setup was
+            # detected under. Now the setup says so itself.
+            feature_schema_version_id=lineage.feature_schema_version_id,
         )
         .returning(setups.c.id)
     ).scalar_one()
@@ -509,6 +525,17 @@ def _maybe_qualify(
             "scoring_configuration_id": str(signal.lineage.scoring_configuration_id),
         },
     )
+    if observation.signal_id is not None:
+        # Migration 0007's join key. The payload above still carries the
+        # score, because the event log has to stand alone as a record of
+        # what was decided; this is the key that makes "argus_score
+        # against realized outcome, across the whole dataset" a join
+        # rather than a JSONB scan.
+        connection.execute(
+            setups.update()
+            .where(setups.c.id == state.setup_id)
+            .values(qualifying_signal_id=observation.signal_id)
+        )
     return LifecycleResult(
         security_id=observation.security_id,
         action=QUALIFIED_ACTION,
