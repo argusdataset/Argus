@@ -22,7 +22,19 @@ from infra.db.schema import metadata as target_metadata
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` is not a style preference. The
+    # default is True, which sets `disabled = True` on every logger that
+    # already exists — including every application logger created when
+    # the modules were imported. Running a migration in-process therefore
+    # silences the rest of the application's logging for the life of that
+    # process, permanently and without a word.
+    #
+    # Module 22 found this the hard way: `argus.identity.seam` logs a
+    # WARNING on every request served through the authentication bypass,
+    # and that warning vanished in any process that had run Alembic. A
+    # deployment that migrates on start-up would have lost exactly the
+    # log line that says authentication is being bypassed.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 #: Escape hatch for tests and one-off maintenance against a specific database.
 URL_OVERRIDE_ENV_VAR = "ARGUS_MIGRATION_DATABASE_URL"

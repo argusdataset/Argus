@@ -27,6 +27,15 @@ dependencies = [
     # response models in services/terminal/schemas.py and documents them
     # from the same definition rather than a second one that can drift.
     "fastapi>=0.115",
+    # Module 22's password hashing. Argon2id rather than bcrypt because
+    # memory-hardness is what costs an attacker with GPUs, and because
+    # bcrypt silently truncates at 72 bytes.
+    "argon2-cffi>=23.1",
+    # Module 22's TOTP. RFC 6238 is short enough to hand-roll and the
+    # details that go wrong — base32 secrets, provisioning URIs, the skew
+    # window — are exactly the ones a library gets right. Replay
+    # protection is ARGUS's own, in services/identity/mfa.py.
+    "pyotp>=2.9",
 ]
 
 [project.optional-dependencies]

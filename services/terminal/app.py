@@ -141,11 +141,22 @@ def get_user(
 ) -> UUID:
     """Who is asking.
 
-    The single place identity enters this service. Module 22 replaces
-    `current_user_id`'s body and nothing here changes — see
-    `identity.py`.
+    The single place identity enters this service. Module 22 replaced
+    `current_user_id`'s body — session verification instead of a trusted
+    header — and this dependency's *signature* did not change, which was
+    the promise `identity.py` made.
+
+    What did change is one line of this body: the standard `Authorization`
+    header is read off the request and forwarded. No new parameter was
+    needed because this dependency already took `request` for the app
+    config, which is the accident that made the seam cost nothing.
     """
-    return current_user_id(connection, x_argus_user, config=request.app.state.config)
+    return current_user_id(
+        connection,
+        x_argus_user,
+        config=request.app.state.config,
+        authorization=request.headers.get("Authorization"),
+    )
 
 
 #: Query parameters shared by several routes. Declared once, as

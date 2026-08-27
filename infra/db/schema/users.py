@@ -18,6 +18,7 @@ audit trail.
 from __future__ import annotations
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -61,6 +62,15 @@ users = Table(
     Column("password_hash", Text, nullable=True),
     Column("mfa_secret", Text, nullable=True),
     Column("mfa_enabled", Boolean, nullable=False, server_default="false"),
+    # The highest TOTP counter this user has successfully consumed
+    # (migration 0012). Without it a code works for its whole time step
+    # rather than once, which is the difference between a one-time
+    # password and a thirty-second one.
+    Column("mfa_last_counter", BigInteger, nullable=True),
+    # When the hash last changed (migration 0012). Nothing reads it —
+    # Module 22 revokes every session on a password change outright —
+    # but it is the first question asked about a compromised account.
+    Column("password_changed_at", DateTime(timezone=True), nullable=True),
     Column("is_active", Boolean, nullable=False, server_default="true"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -125,6 +135,28 @@ user_watchlist_items = Table(
     UniqueConstraint("watchlist_id", "security_id", name="uq_watchlist_item"),
     Index("ix_watchlist_items_watchlist", "watchlist_id"),
     comment="Securities on a user watchlist.",
+)
+
+login_attempts = Table(
+    "login_attempts",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()),
+    # Lowercased at write time. Recorded even when it names no account:
+    # an attacker guessing addresses is the pattern this table exists to
+    # make visible, and dropping those rows would hide it.
+    Column("email", Text, nullable=False),
+    Column(
+        "user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    ),
+    Column("succeeded", Boolean, nullable=False),
+    # Why it failed. Never what was tried.
+    Column("reason", Text, nullable=True),
+    Column("ip_address", Text, nullable=True),
+    Column("user_agent", Text, nullable=True),
+    Column("attempted_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("ix_login_attempts_email", "email", "attempted_at"),
+    Index("ix_login_attempts_address", "ip_address", "attempted_at"),
+    comment="Append-only record of every authentication attempt (Module 22).",
 )
 
 audit_log = Table(

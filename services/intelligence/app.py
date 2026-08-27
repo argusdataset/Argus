@@ -124,11 +124,27 @@ def optional_user(
     user-scoped yet; wired anyway so the dependency is visible and a
     future personalised route has nothing to invent.
     """
-    if not x_argus_user:
+    authorization = request.headers.get("Authorization")
+    if not x_argus_user and not authorization:
         return None
-    from services.terminal.config import TerminalConfig
 
-    return current_user_id(connection, x_argus_user, config=TerminalConfig())
+    from services.terminal.config import TerminalConfig
+    from services.terminal.errors import TerminalError
+
+    try:
+        return current_user_id(
+            connection,
+            x_argus_user,
+            config=TerminalConfig(),
+            authorization=authorization,
+        )
+    except TerminalError:
+        # Nothing here is user-scoped yet, so a credential that does not
+        # check out means "anonymous", not "refused". The moment a route
+        # here becomes personalised this must stop swallowing — which is
+        # why it catches `TerminalError` narrowly and is documented rather
+        # than being a bare except somebody trusts.
+        return None
 
 
 ConnectionDep = Annotated[Connection, Depends(get_connection)]

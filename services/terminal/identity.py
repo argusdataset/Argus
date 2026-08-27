@@ -1,43 +1,54 @@
-"""Who is asking — a deliberately temporary stub, shaped for Module 22 to replace.
+"""Who is asking. Module 22 replaced this function's body; the contract held.
 
-## The whole point of this file is that it is one function
+## What this file promised, and what actually happened
 
-Module 22 (Authentication) is not built. Watchlists need an owner anyway.
-The failure mode to avoid is identity leaking into every route as an
-implicit convention, so that when real auth arrives it has to be threaded
-through a dozen call sites.
+Module 19 wrote this file as a stub and made one promise about it:
 
-So: `current_user_id` is the only place in this service that decides who
-is asking. Every user-scoped route depends on it. Module 22 replaces its
-body — verify a session token instead of trusting a header — and touches
-nothing else. No route signature changes, no query changes, no schema
-changes.
+> "Module 22 replaces its body — verify a session token instead of
+> trusting a header — and touches nothing else. No route signature
+> changes, no query changes, no schema changes. Its contract is exactly:
+> return a `UUID` naming a row in `users`, or raise `TerminalError`."
 
-## The stub trusts a header, which is an authentication bypass
+That is what happened. `current_user_id` now verifies a session through
+`services.identity.seam.resolve_identity`. Its signature gained one
+keyword argument with a default, so every existing caller compiles and
+behaves identically; no route in Modules 19, 20 or 21 changed, no query
+changed, no schema changed, and their test suites pass unmodified.
 
-Saying that plainly is the point. `X-Argus-User` carrying a user id is
-not authentication; anyone who can reach the service can be anyone. It is
-acceptable *only* because Module 22 has not defined its patterns yet and
-guessing at them would produce a half-built auth system, which the module
-brief rules out explicitly.
+The stub is still here, and that is deliberate — see below.
 
-Two things stop it shipping by accident:
+## Two ways in, and only one of them is authentication
 
-**It is a config flag, defaulting to on but checkable.** With
-`stub_identity_enabled=False` every user-scoped endpoint returns 501 and
-names Module 22. Turning the stub off is therefore a one-line deployment
-change, not a code change, and a deployment that forgets is a deployment
-that *left it on* rather than one that failed to remove it.
+**A session.** `Authorization: Bearer <token>`, verified against
+`sessions` by Module 22: the hash matches, it has not expired, it has not
+been revoked, and the account is still active. This path is never gated
+by a configuration flag, because a deployment must not be able to switch
+authentication off.
 
-**It resolves against a real `users` row.** The header is not taken at
-face value as an opaque string: it must be a UUID naming a row that
-exists, or the request is refused. Watchlist ownership is therefore
-genuinely foreign-keyed from day one, and Module 22 inherits real rows
-rather than a pile of strings that have to be reconciled.
+**The header stub.** `X-Argus-User` carrying a user id is *not*
+authentication — anyone who can reach the service can be anyone. It
+survives only as a local-development affordance, is available only while
+`stub_identity_enabled` is true, and every request it serves is logged at
+WARNING naming the bypass and the user it granted.
 
-What it does *not* do is check a password, a token, a signature, or a
-session. It is a stand-in for identity, not for authentication, and the
-difference is the entire security model here.
+An invalid session token does not fall back to the stub. A request that
+presents a credential and has it rejected is refused, not re-served as
+whoever its header named — that fallback would be a privilege escalation
+wearing the clothes of a convenience.
+
+## What `stub_identity_enabled` means now
+
+It changed from "can this service answer user-scoped requests at all" to
+"is the bypass available". The reasoning is in
+`services/identity/seam.py`; the short version is that the flag now
+closes the bypass instead of closing the service, so turning it off is
+something a deployment can actually do. `False` still produces a 501, but
+only for the request that genuinely cannot be answered: no credential
+supplied, and no stub to fall back on.
+
+Production posture is `stub_identity_enabled=False`. The default stayed
+`True` so that Modules 19-21's existing suites, written against the stub,
+keep passing without modification — which is the evidence the seam held.
 """
 
 from __future__ import annotations
@@ -48,6 +59,8 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from infra.db.schema.users import users
+from services.identity.seam import resolve_identity
+from services.identity.tokens import bearer_token
 from services.terminal.config import TerminalConfig
 from services.terminal.errors import (
     IDENTITY_REQUIRED,
@@ -67,58 +80,65 @@ def current_user_id(
     raw_header: str | None,
     *,
     config: TerminalConfig | None = None,
+    authorization: str | None = None,
 ) -> UUID:
     """The user making this request, or a `TerminalError` explaining why not.
 
-    Module 22 replaces this function. The contract it must keep: return a
-    `UUID` naming a row in `users`, or raise `TerminalError`. Everything
+    The contract Module 19 specified and Module 22 kept: return a `UUID`
+    naming a row in `users`, or raise `TerminalError`. Everything
     downstream — every watchlist query, every ownership check — is written
     against that and nothing else.
+
+    `authorization` is the standard header carrying the session token. It
+    is keyword-only with a default so that Module 19-era callers passing
+    only `(connection, raw_header, config=...)` still work exactly as they
+    did; the two dependency bodies that can supply it now do.
     """
     config = config or TerminalConfig()
 
-    if not config.stub_identity_enabled:
+    user_id, _mechanism = resolve_identity(
+        connection,
+        raw_header,
+        authorization=authorization,
+        stub_enabled=config.stub_identity_enabled,
+        user_header_name=USER_HEADER,
+    )
+    if user_id is not None:
+        return user_id
+
+    # Nobody is signed in. Which refusal depends on *which mechanism* the
+    # caller reached for, not on whether they supplied something:
+    #
+    #   no Bearer token, stub off  -> 501. The caller used a mechanism this
+    #                                 deployment does not offer — either the
+    #                                 header, or nothing at all. Module 19
+    #                                 chose this status for exactly this
+    #                                 case and the reasoning survives real
+    #                                 auth: the caller did nothing wrong.
+    #   anything else              -> 401. A credential was presented
+    #                                 through a mechanism that exists, and
+    #                                 it did not check out.
+    if not bearer_token(authorization) and not config.stub_identity_enabled:
         raise TerminalError(
             IDENTITY_UNAVAILABLE,
-            "This deployment cannot establish who you are: the development "
-            "identity stub is disabled and Module 22 (Authentication) is not built. "
-            "No user-scoped endpoint can be served.",
+            f"This deployment cannot establish who you are from what you sent: the "
+            f"development identity stub is disabled, so the {USER_HEADER} header is "
+            f"not accepted. Module 22 (Authentication) provides session-based "
+            f"identity — sign in at /identity/login and send the session token as "
+            f"'Authorization: Bearer <token>'.",
             status=501,
+            detail={"scheme": "Bearer", "stub_enabled": False},
         )
 
-    if not raw_header:
-        raise TerminalError(
-            IDENTITY_REQUIRED,
-            f"This endpoint is user-scoped and no identity was supplied. Send the "
-            f"{USER_HEADER} header. Note that this is a development stub, not "
-            f"authentication — see services/terminal/identity.py.",
-            status=401,
-            detail={"header": USER_HEADER},
-        )
-
-    try:
-        user_id = UUID(raw_header.strip())
-    except ValueError as error:
-        raise TerminalError(
-            IDENTITY_REQUIRED,
-            f"{USER_HEADER} must be a user UUID; got {raw_header!r}.",
-            status=401,
-            detail={"header": USER_HEADER},
-        ) from error
-
-    if not stub_user_exists(connection, user_id):
-        # Refused rather than trusted. Ownership is foreign-keyed, so a
-        # watchlist created under a made-up id would fail at the database
-        # anyway — failing here says why, and keeps the stub from being a
-        # way to invent users.
-        raise TerminalError(
-            IDENTITY_REQUIRED,
-            f"No user {user_id} exists.",
-            status=401,
-            detail={"header": USER_HEADER, "user_id": str(user_id)},
-        )
-
-    return user_id
+    raise TerminalError(
+        IDENTITY_REQUIRED,
+        f"This endpoint is user-scoped and no valid session was supplied. Sign in at "
+        f"/identity/login and send the session token as "
+        f"'Authorization: Bearer <token>'. ({USER_HEADER} is a development stub, not "
+        f"authentication — see services/terminal/identity.py.)",
+        status=401,
+        detail={"scheme": "Bearer", "header": USER_HEADER},
+    )
 
 
 def stub_user_exists(connection: Connection, user_id: UUID) -> bool:

@@ -81,6 +81,11 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     "historical_similarity_results",
     "historical_scan_status",
     "audit_log",
+    # Added with the table in migration 0012 (Module 22). A lockout you
+    # can clear with a DELETE is not a lockout, so the log the lockout
+    # counts is immutable — which is also why the count is "failures
+    # since the last success" rather than a counter reset on success.
+    "login_attempts",
 )
 
 #: Reject DELETE and TRUNCATE, but allow UPDATE.
