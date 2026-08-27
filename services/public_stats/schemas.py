@@ -2,9 +2,9 @@
 
 Module 19 established three conventions and they are binding here rather
 than re-argued — absence explains itself, every response carries its own
-as-of, and identity is explicit. `Unavailable` is imported from Module 19
-rather than redefined, because two services with two shapes for "we have
-nothing" is exactly the drift the convention exists to prevent.
+as-of, and identity is explicit. `Unavailable`, `Freshness` and
+`Provenance` now live in `services/shared/` and are imported from there;
+this file defines only what is specific to the public page.
 
 Two things this module adds, both because its reader has no relationship
 with ARGUS at all:
@@ -32,11 +32,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Module 19's shape, reused rather than redefined.
-from services.terminal.schemas import Unavailable
+# Defined once in `services/shared/` — see that package on why the three
+# response blocks are shared and the error codes are not.
+from services.shared.schemas import Freshness, Provenance, Unavailable
 
 __all__ = [
     "ChartResponse",
+    "StatsProvenance",
     "Freshness",
     "Provenance",
     "PublicSummary",
@@ -45,31 +47,15 @@ __all__ = [
 ]
 
 
-class Freshness(BaseModel):
-    """When these figures were computed, and whether that is recent enough.
-
-    `stale` is reported rather than enforced. A day-old true number beats
-    a spinner, so ARGUS serves it and says so instead of hiding it — the
-    reader decides whether the age matters for what they are asking.
-    """
-
-    computed_at: datetime = Field(description="When ARGUS last recomputed these figures.")
-    as_of: datetime = Field(
-        description=(
-            "The point-in-time cutoff of the underlying data. Every outcome counted was "
-            "knowable to ARGUS at this instant."
-        )
-    )
-    age_seconds: float
-    stale: bool
-    staleness_reason: str | None = None
-
-
-class Provenance(BaseModel):
+class StatsProvenance(Provenance):
     """Exactly which approved results produced these numbers.
 
     Published so a reader can check ARGUS is not quietly choosing which
     periods to count. If this set changes, the numbers changed with it.
+
+    Subclasses the shared base rather than replacing it: `note` and the
+    convention that provenance travels with every number are shared;
+    these two identifier lists are this service's own.
     """
 
     approved_runs: list[str] = Field(
@@ -79,7 +65,6 @@ class Provenance(BaseModel):
         default_factory=list,
         description="Windows of live-tracked outcomes a named human approved.",
     )
-    note: str = ""
 
 
 class ChartResponse(BaseModel):
@@ -99,7 +84,7 @@ class ChartResponse(BaseModel):
         description="A plain-language sentence about what this chart shows and does not."
     )
     freshness: Freshness
-    provenance: Provenance
+    provenance: StatsProvenance
 
 
 class PublicSummary(BaseModel):

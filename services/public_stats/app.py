@@ -56,9 +56,9 @@ from services.public_stats.releases import approved_windows, window_history
 from services.public_stats.schemas import (
     ChartResponse,
     Freshness,
-    Provenance,
     PublicSummary,
     ReleaseWindowResponse,
+    StatsProvenance,
 )
 from services.public_stats.snapshots import read_chart
 
@@ -186,7 +186,7 @@ def _charts_router() -> APIRouter:
             summary=body["summary"],
             caption=body["caption"],
             freshness=Freshness(**body["freshness"]),
-            provenance=Provenance(**body["provenance"]),
+            provenance=StatsProvenance(**body["provenance"]),
         )
 
     return router

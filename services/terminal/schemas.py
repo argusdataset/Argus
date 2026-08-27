@@ -46,10 +46,14 @@ would break the widget.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+# Defined once in `services/shared/` — see that package on why these three
+# blocks are shared and the error codes are not.
+from services.shared.schemas import Unavailable
 
 __all__ = [
     "BarsResponse",
@@ -68,22 +72,6 @@ __all__ = [
     "WatchlistItem",
     "WatchlistSummary",
 ]
-
-
-class Unavailable(BaseModel):
-    """Why a block of data could not be produced.
-
-    Never `null` in its place. A consumer that sees this knows the request
-    succeeded and ARGUS genuinely has nothing, and knows which kind of
-    nothing — which is the difference between "not filed yet" and "we do
-    not carry this".
-    """
-
-    available: Literal[False] = False
-    #: One of Module 07's `MissReason` values, verbatim.
-    reason: str
-    #: Prose for a log or a tooltip. Never parsed.
-    explanation: str
 
 
 class CompanyProfile(BaseModel):

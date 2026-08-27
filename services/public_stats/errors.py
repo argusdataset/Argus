@@ -1,26 +1,18 @@
-"""Errors, in Module 19's envelope rather than a second one.
+"""The public page's error codes. The envelope lives in `services/shared/`.
 
-`error_payload` is imported from `services.terminal.errors` and used
-directly. It is a pure function over three arguments with nothing
-Terminal-specific in it, so it met the brief's "use it if it's structured
-for reuse" test.
+Module 20 originally imported `error_payload` from
+`services/terminal/errors.py` and flagged that as the wrong shape: the
+public stats service depended on the Terminal for a reason that had
+nothing to do with the Terminal. Module 21 moved the envelope to
+`services/shared/`, and this file now imports from there.
 
-**Flagged rather than fixed:** `error_payload` and the `TerminalError`
-shape now serve two services and live in one of them, which means
-`services/public_stats` imports from `services/terminal` for a reason
-that has nothing to do with the Terminal. The right home is a shared
-`services/errors.py` with an `ApiError` base that both subclass. Moving
-it means editing Module 19, which this module's boundaries forbid, so it
-is reported instead — see the module report. Importing was chosen over
-duplicating because two envelopes that drift is a worse outcome than one
-import in the wrong direction.
+The codes stay here. A code is a statement about this service's domain,
+and `STATISTICS_WITHDRAWN` has nothing to say to the Terminal.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from services.terminal.errors import error_payload
+from services.shared.errors import ApiError, error_payload
 
 __all__ = [
     "CHART_NOT_FOUND",
@@ -50,22 +42,9 @@ STATISTICS_UNAVAILABLE = "STATISTICS_UNAVAILABLE"
 STATISTICS_WITHDRAWN = "STATISTICS_WITHDRAWN"
 
 
-class PublicStatsError(Exception):
-    """An error with a stable code, carried to the HTTP layer intact."""
+class PublicStatsError(ApiError):
+    """A public-stats error. The envelope is `services.shared.errors.ApiError`.
 
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        status: int = 400,
-        detail: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status = status
-        self.detail = detail or {}
-
-    def payload(self) -> dict[str, Any]:
-        return error_payload(self.code, self.message, self.detail)
+    Subclassed rather than aliased so this service's handler catches its
+    own errors and not another's.
+    """

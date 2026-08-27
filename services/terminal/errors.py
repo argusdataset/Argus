@@ -1,4 +1,13 @@
-"""One error shape, with machine-readable codes.
+"""The Terminal's error codes. The envelope itself lives in `services/shared/`.
+
+## Where the envelope went
+
+`error_payload` and the error base class started here, because the
+Terminal was the first module with a consumer outside ARGUS. Module 20
+reused them by importing from this file and flagged that as the wrong
+shape; Module 21 moved them to `services/shared/`. This module now
+imports what it once defined, which is the right direction for a
+convention with three consumers.
 
 ## Why the codes exist
 
@@ -35,7 +44,7 @@ scan availability.
 
 from __future__ import annotations
 
-from typing import Any
+from services.shared.errors import ApiError, error_payload
 
 __all__ = [
     "IDENTITY_REQUIRED",
@@ -69,36 +78,14 @@ INVALID_REQUEST = "INVALID_REQUEST"
 NOT_FOUND = "NOT_FOUND"
 
 
-class TerminalError(Exception):
-    """An error with a stable code, carried to the HTTP layer intact.
+class TerminalError(ApiError):
+    """A Terminal error. The envelope is `services.shared.errors.ApiError`.
 
-    Raised by the service functions, which know nothing about HTTP.
-    `app.py` installs the one handler that turns these into responses, so
-    a service module never imports a status code and the envelope is
-    built in exactly one place.
+    Subclassed rather than aliased so `app.py`'s handler catches the
+    Terminal's errors and not another service's — two services sharing an
+    exception class would mean one service's handler silently answering
+    for the other.
     """
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        status: int = 400,
-        detail: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status = status
-        self.detail = detail or {}
-
-    def payload(self) -> dict[str, Any]:
-        return error_payload(self.code, self.message, self.detail)
-
-
-def error_payload(code: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The envelope. One function, so every error in this service matches."""
-    return {"error": {"code": code, "message": message, "detail": detail or {}}}
 
 
 def security_not_found(ticker: str) -> TerminalError:
