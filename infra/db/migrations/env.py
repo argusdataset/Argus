@@ -18,22 +18,37 @@ from sqlalchemy import engine_from_config, pool
 # Importing the schema package registers every table on the shared
 # metadata object, which is what autogenerate diffs against.
 from infra.db.schema import metadata as target_metadata
+from infra.observability.logging import logging_is_configured
 
 config = context.config
 
-if config.config_file_name is not None:
-    # `disable_existing_loggers=False` is not a style preference. The
-    # default is True, which sets `disabled = True` on every logger that
-    # already exists — including every application logger created when
-    # the modules were imported. Running a migration in-process therefore
-    # silences the rest of the application's logging for the life of that
-    # process, permanently and without a word.
+if config.config_file_name is not None and not logging_is_configured():
+    # Two hazards live in this one call, and both were found the hard way.
     #
-    # Module 22 found this the hard way: `argus.identity.seam` logs a
-    # WARNING on every request served through the authentication bypass,
-    # and that warning vanished in any process that had run Alembic. A
-    # deployment that migrates on start-up would have lost exactly the
-    # log line that says authentication is being bypassed.
+    # **One: it disables every existing logger.** `fileConfig` defaults to
+    # `disable_existing_loggers=True`, which sets `disabled = True` on
+    # every logger created before it runs — that is, every application
+    # logger, since they are created at import. A process that ran a
+    # migration lost the rest of its logging permanently and without a
+    # word. Module 22 found it when the WARNING that says authentication
+    # is being bypassed vanished under test, and fixed it with the
+    # keyword below.
+    #
+    # **Two: it replaces the root handlers and level.** That survived
+    # Module 22's fix. `disable_existing_loggers=False` keeps loggers
+    # alive, but `fileConfig` still installs alembic.ini's `[logger_root]`
+    # — dropping the level to WARNING and swapping whatever handler the
+    # application installed for a plain stderr one. A deployment that
+    # configured JSON logging and then migrated would keep its loggers and
+    # lose its formatter, its level, and anything shipping records
+    # onward. The symptom is worse than the first hazard, because logging
+    # still appears to work.
+    #
+    # So the call is skipped entirely once an application has said it owns
+    # logging configuration. A standalone `alembic upgrade head` never
+    # calls `configure_logging`, so it still gets alembic.ini's console
+    # output exactly as before; an in-process migration leaves the
+    # application's logging alone.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 #: Escape hatch for tests and one-off maintenance against a specific database.
