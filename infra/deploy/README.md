@@ -449,17 +449,28 @@ Written as a list of things that are **not done**, not as caveats.
    this exists, DR depends entirely on the provider's snapshots, which
    have not been verified as enabled or restorable. This is the largest
    gap on the list.
-2. **The Dockerfile has never been built.** Docker Hub egress is blocked
-   in this environment (403 on `production.cloudfront.docker.com`), so
-   the image was written and reviewed but never built or run. Every claim
-   about it is a claim about its source, not about a container that
-   exists. Build it and run all seven commands before trusting any of §1.
-3. **Railway has been reached, and the first deploy crashed.** On a
-   configuration-ordering bug, now fixed and regression-tested (see
-   §2). What that proves is that the build, the image and the start
-   command work; what it does not prove is anything after startup. TLS
-   termination, the health-check path, the pre-deploy hook and the cron
-   schedules remain as documented and unconfirmed.
+2. **The image builds and runs — one command of seven is proven.**
+   Module 25 wrote this entry as "never built": Docker Hub egress was
+   blocked in the build environment (403 on
+   `production.cloudfront.docker.com`), so nothing could be verified
+   locally. Railway has since built and run it, which settles the
+   question the other way. Deployment `6435838a`'s log carries frames at
+   `/app/infra/deploy/asgi.py` and `/opt/venv/.../uvicorn/` — the exact
+   paths this Dockerfile creates — with uvicorn invoking `terminal_app`
+   through `--factory`, which is `processes.py`'s generated start
+   command. Image, venv, source layout and start command are all
+   confirmed by that.
+
+   What is *not* confirmed is the other six commands. `terminal_app` is
+   the only factory a real container has ever executed.
+3. **Nothing after startup is confirmed.** That deploy crashed at
+   configuration resolution — the `DATABASE_URL` ordering bug, fixed and
+   regression-tested by `test_platform_environment.py`. A crash at
+   startup proves the build and says nothing about the running system.
+   TLS termination, the platform's own health-check polling, the
+   pre-deploy migration hook, the cron schedules, and whether all seven
+   process definitions exist as seven Railway services or one, all
+   remain as documented and unverified.
 
    The lesson is worth keeping separately from the bug: a suite of 2,204
    tests passed while the deployed process could not start, because every

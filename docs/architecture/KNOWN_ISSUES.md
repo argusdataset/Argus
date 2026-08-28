@@ -1,0 +1,447 @@
+# ARGUS — Consolidated Known-Issues Register
+
+**Compiled:** Full Integration Audit, Phase 1 "Engineering Complete", 2026-08-28
+**Scope:** every item any of Modules 03-25's reports flagged as *found but not
+fixed*, *deferred*, or *carried forward*, plus items this audit found that no
+module report contains.
+
+Until this document existed, that information was scattered across 25+
+individual reports, each written by a session that could not see the others.
+This is the single place it lives now. An entry leaves this register by being
+fixed and having its fix pointed at, not by being forgotten.
+
+Each entry carries: **who found it**, **what it is**, **current status as
+verified by this audit** (not as claimed by the report that filed it), and a
+severity.
+
+Severity is about consequence-if-it-fires, not likelihood:
+
+| | |
+|---|---|
+| **HIGH** | Can produce a wrong published number, lose data, or take production down. |
+| **MEDIUM** | Degrades a guarantee, or removes a safety net while leaving behaviour correct today. |
+| **LOW** | Operational friction, documentation drift, or a hazard with no current trigger. |
+
+---
+
+## A. Correctness hazards in live code
+
+### A1. Four "latest row wins" ordering hazards — OPEN, by instruction
+
+**Found by** Module 23 (`infra/observability/ordering.py`).
+**Status:** open, deliberately. Module 24 was told to confirm-not-fix; Module 25
+was told to carry forward. Both did.
+
+`now()` is transaction-start time, not statement time, and
+`gen_random_uuid()` breaks ties randomly. So two rows written in one
+transaction have identical timestamps and no deterministic order, and any
+`ORDER BY <timestamp> DESC LIMIT 1` over them returns either row.
+
+The four registered instances (`safe=False` in the registry):
+
+| Table | Consequence when it fires |
+|---|---|
+| `setup_outcomes` | A recomputed outcome and its original are indistinguishable by time; "the current outcome" is a coin flip. |
+| `signals` | Two signals scored for one security in one transaction; the "latest score" is arbitrary. |
+| `historical_similarity_results` | Same, for a re-run similarity search. |
+| `public_stat_snapshots` | Two refreshes in one transaction; the served chart is arbitrary. Mitigated in practice — `refresh_public_stats` deletes before inserting per chart. |
+
+**Verified this audit:** all four still registered, still `safe=False`, still
+unfixed. The registry also holds 11 `safe=True` entries that were examined and
+cleared, including Module 24's `registration_attempts` (it sums attempts rather
+than taking a latest row).
+
+**No fifth instance exists.** Verified independently rather than by trusting
+the registry: every `limit(1)` in `core/`, `services/`, `infra/`, `data/` and
+`packages/` was enumerated, and every source file changed after Module 23 was
+re-scanned. The only hit in post-Module-23 code is a *docstring* in
+`infra/deploy/scanner.py` explaining why that module refuses to write the
+query — Module 25 needed "the latest universe version" and required an explicit
+`ARGUS_UNIVERSE_VERSION` instead of becoming a fifth instance.
+
+**Severity: HIGH.** Nothing has fired because nothing writes two such rows in
+one transaction yet. The first bulk backfill or replay is when that changes.
+
+---
+
+### A2. `data_snapshot` publishers collide on two calls in one day — OPEN, and it is **two** functions, not one
+
+**Found by** Module 25, described incompletely — its report was cut off
+mid-sentence and named only one of the two occurrences. This audit finished the
+investigation.
+
+**What it actually is.** `data_snapshot` has a **unique** `version_label` and a
+**non-unique** `content_checksum`:
+
+```python
+Column("version_label", Text, nullable=False, unique=True),   # <- unique
+Column("content_checksum", Text, nullable=False),             # <- NOT unique
+```
+
+Both publishers compute their idempotence key and their uniqueness key at
+**different granularities**:
+
+```python
+checksum      = sha256(f"{config.content_checksum()}|{as_of.isoformat()}")   # microseconds
+version_label = f"{config.version_label()}@{as_of.date().isoformat()}"       # days
+```
+
+So for two calls with the same config on the same calendar date but a different
+instant:
+
+1. the checksums differ → the "already published?" lookup **misses**;
+2. it proceeds to `INSERT`;
+3. the labels are identical → **`UniqueViolation` on `uq_data_snapshot_version_label`**.
+
+The function's own docstring says *"Idempotent by checksum"*. It is idempotent
+only for a byte-identical `as_of`.
+
+**The failure mode is a loud crash, not a silent overwrite.** Module 25's
+cut-off note left both possibilities open; this audit settled it. That is the
+better of the two, but it still means an unhandled `IntegrityError` on a path
+that believes it is idempotent.
+
+**Both occurrences, confirmed empirically against a real migrated database:**
+
+| Function | Module | File |
+|---|---|---|
+| `publish_outcome_snapshot` | 16 | `core/outcome_tracking/config.py:219` |
+| `publish_similarity_configuration` | 11 | `core/historical_similarity/config.py:196` |
+
+```
+Module 16  publish_outcome_snapshot
+   same instant, twice    : IDEMPOTENT (same id returned)
+   two instants, same day : UniqueViolation: duplicate key value violates
+                            unique constraint "uq_data_snapshot_version_label"
+
+Module 11  publish_similarity_configuration
+   same instant, twice    : IDEMPOTENT (same id returned)
+   two instants, same day : UniqueViolation: ... same constraint
+```
+
+The Module 11 occurrence appears in **no module report at all**. It is a
+finding of this audit.
+
+**Blast radius.** `publish_outcome_snapshot` is called by
+`infra/deploy/scanner.py`'s `build_lineage`, which is the deployed scanner's
+startup path. A scanner container restarting on the same day would have crashed
+on its second start. Module 25 worked around it locally — `_snapshot_instant`
+quantises `as_of` to midnight UTC — and left a regression test
+(`test_module_16s_snapshot_publisher_collides_on_two_instants_in_one_day`)
+that fails if Module 16 is ever fixed, so the workaround gets revisited.
+`publish_similarity_configuration` has **no such workaround**.
+
+**Suggested fix** (not applied — outside this audit's boundary): make the two
+keys agree. Either put the full `as_of` in the label, or compute the checksum
+over `as_of.date()`. The second is likely right: a snapshot's identity is the
+cutoff *date*, which is the granularity the label already assumes and the
+granularity Module 18 scans at.
+
+**Severity: HIGH** for Module 11's un-worked-around copy, **MEDIUM** for Module
+16's (contained at its only live caller, but the trap is still armed for the
+next caller).
+
+---
+
+### A3. The public-stats gate's structural test does not cover the idiom it needs to — OPEN (audit finding)
+
+**Found by** this audit. In no module report.
+
+Module 20's guarantee is absolute: nothing derived from a `PENDING_REVIEW` or
+`REJECTED` result may reach the public page. It is enforced *structurally* by
+`tests/unit/public_stats/test_gate_structure.py`, so that the **next** endpoint
+is covered too, not just today's.
+
+**The guarantee holds today.** Verified independently: `approved_runs()` has
+exactly one caller (`gate.py`), `gate.py` reaches results only through Module
+17's loader and imports no result-table object, and the only
+`infra.db.schema` imports elsewhere in the package are the gate's own metadata
+tables (`public_release_windows`, `public_stat_snapshots`).
+
+**The enforcement has a hole.** `test_no_file_names_a_result_table_directly`
+scans for *string literals* — `"setup_outcomes"`, `FROM setup_outcomes` — which
+is the raw-SQL idiom. ARGUS does not use that idiom. It uses SQLAlchemy Core
+`Table` objects. A break attempt planting
+
+```python
+from infra.db.schema.setups import setup_outcomes   # then: select(setup_outcomes)
+```
+
+into `services/public_stats/aggregates.py` **passed all 32 structural tests.**
+
+So the test bans the way the gate would *not* realistically be bypassed and
+misses the way it would.
+
+**Suggested fix** (not applied — pre-existing, and the boundary says report):
+add a banned-imports check alongside the existing string scan —
+`infra.db.schema.setups` (and any module exporting a result table) may not be
+imported by any file in the package. Roughly three lines, reusing the
+`_imports()` helper already in the file.
+
+**Severity: MEDIUM.** No live bypass exists; the safety net that is supposed to
+stop one being added has a hole in the shape of the most likely mistake.
+
+---
+
+### A4. The ordering registry's completeness test does not scan `infra/` — OPEN (audit finding)
+
+**Found by** this audit. In no module report.
+
+`test_the_audit_covers_every_ordered_read_in_the_codebase`
+(`tests/integration/observability/test_ordering.py`) is what makes the
+registry in A1 trustworthy: it walks the parse tree for a descending order over
+a timestamp-shaped column and fails if the table is not registered. Its own
+docstring is right about why it matters — *"a registry that silently misses a
+table is worse than no registry, because the next person trusts it."*
+
+It scans `core/`, `services/` and `data/`. It does **not** scan `infra/` or
+`packages/` — which is where Module 24 (`infra/security/`) and Module 25
+(`infra/deploy/`) put all of their code. The two most recent modules were
+written entirely outside the scan that is supposed to catch them.
+
+**The registry is nonetheless complete in substance.** This audit ran the same
+AST logic over `infra/` and `packages/` with a widened column list. Four hits,
+none a new hazard:
+
+| Hit | Verdict |
+|---|---|
+| `setup_outcomes`, `public_stat_snapshots` | inside `ordering.py`'s own `probe()`; both registered |
+| `sessions` at `infra/deploy/retention.py:267` | a `WHERE expires_at <` filter, not an ordered read; registered safe |
+| `table` at `infra/observability/pipeline.py:237` | false positive — a parameterised variable named `table`, not a table |
+
+**Suggested fix** (not applied): add `Path("infra")` and `Path("packages")` to
+the test's scan list. One line. Expect the `pipeline.py` false positive to need
+an exclusion, which is itself worth knowing about.
+
+**Severity: MEDIUM.** Same class as A3: the guarantee holds, and the mechanism
+that is supposed to keep it holding has a blind spot exactly where new code is
+being written.
+
+---
+
+## B. Test-suite and tooling integrity
+
+### B1. A local `.env` file leaks past the test suite's env isolation — OPEN
+
+**Found by** the deployment-readiness audit. Re-confirmed here **with evidence**
+rather than by inspection.
+
+`tests/unit/config/conftest.py`'s autouse `_isolated_config_env` clears every
+`ARGUS_*` key from `os.environ` via `monkeypatch.delenv`. It cannot clear a
+`.env` file, because `AppConfig` declares `env_file=".env"` and
+pydantic-settings reads that file from disk directly, never through
+`os.environ`.
+
+**Proven, not asserted.** A two-line `.env` was planted and the config tests
+re-run:
+
+```
+FAILED tests/unit/config/test_environment.py::test_defaults_to_development
+FAILED tests/unit/config/test_settings.py::test_partially_set_database_group_names_each_missing_field
+2 failed, 31 passed
+```
+
+with the leaked value visible in the failure —
+`input_value={'name': 'leaked_from_d...nv', 'host': 'myhost'}`. The file was
+removed and all 33 pass again.
+
+**Why it has never fired:** `.env` is gitignored, is absent from this checkout,
+and CI never creates one. It fires only on a developer machine that has one —
+which is every developer machine that has ever run the app locally.
+
+**Suggested fix** (not applied — pre-existing and explicitly a re-confirm task):
+have the fixture neutralise the file source as well as the environment, e.g.
+`monkeypatch.setitem(AppConfig.model_config, "env_file", None)`.
+
+**Severity: MEDIUM.** It cannot corrupt production. It can make a developer's
+local suite fail for a reason that has nothing to do with their change, or —
+worse — make a genuinely broken config *pass* because the `.env` supplied what
+the code failed to.
+
+---
+
+## C. Production-readiness gaps (Module 25's list, re-verified)
+
+Module 25's own list lives in `infra/deploy/README.md` §8. Re-verified here; one
+entry was stale and has been corrected.
+
+### C1. No off-platform backup storage — OPEN. **Severity: HIGH**
+
+`infra/deploy/backup.py`'s `dump()` writes to a filesystem path. On Railway that
+path is on an ephemeral container filesystem, so a backup written there is not a
+backup. Disaster recovery therefore rests entirely on the managed database
+provider's own snapshots, which **have not been verified as enabled or
+restorable**. The restore *drill* is real and passes (`python -m
+infra.deploy.backup`, 44/44 guard triggers, functional checks on the restored
+copy) — what is missing is a durable destination and a schedule.
+
+### C2. ~~The Dockerfile has never been built~~ — **CORRECTED: it has been built and run**
+
+Module 25 recorded this honestly at the time: Docker Hub egress was blocked in
+the build environment (403 on `production.cloudfront.docker.com`), so the image
+was written and reviewed but never built. **That is no longer true**, and the
+old entry contradicted the entry that followed it.
+
+Evidence, from the Railway deploy log of deployment `6435838a`:
+
+- the traceback's frames are `/app/infra/deploy/asgi.py` and
+  `/opt/venv/lib/python3.11/site-packages/uvicorn/...` — exactly the paths the
+  Dockerfile creates (`WORKDIR /app`, venv at `/opt/venv`);
+- `uvicorn` started and invoked `terminal_app` through `--factory`, which is the
+  generated start command from `infra/deploy/processes.py`.
+
+So: image built, container ran, venv present, source present, start command
+correct. It crashed *after* all of that, at configuration resolution — the
+`DATABASE_URL` ordering bug, fixed in commit `2096861` and regression-tested by
+`tests/integration/deploy/test_platform_environment.py`.
+
+`infra/deploy/README.md` §8 has been updated to say this. **Status: closed.**
+
+### C3. Post-fix production health unconfirmed — OPEN. **Severity: HIGH**
+
+What the crashed-then-fixed deploy proves is that the build, image and start
+command work. It does not prove anything after startup. Unconfirmed: TLS
+termination behaviour, the health-check path in the platform's own polling, the
+`preDeployCommand` migration hook, the cron schedules, and whether all seven
+process definitions exist as seven Railway services or one. See **Part D** of
+the audit report — this could not be verified from this environment.
+
+### C4. Rate limiter is single-process — OPEN. **Severity: MEDIUM**
+
+Counters live in process memory. `WEB_CONCURRENCY` defaults to 1 and
+`DeploymentProfile.validate()` *refuses to boot* a production process with more
+than one worker and no shared store, which contains the problem rather than
+solving it. Horizontal scaling by replicas multiplies every configured ceiling
+by the replica count and no check catches that.
+`ARGUS_RATE_LIMIT_STORE_URL` is read but nothing consumes it. Redis was
+considered and declined for a system with no users.
+
+### C5. No point-in-time recovery — OPEN. **Severity: MEDIUM**
+
+RPO is 24 hours because a daily logical dump is the mechanism. Up to a day of
+registrations, logins, watchlist edits and audit records can be lost. Tightening
+it needs WAL archiving, which is a platform capability rather than something
+`pg_dump` can be scheduled into.
+
+### C6. No load test — OPEN. **Severity: LOW**
+
+Pool sizes (10 + 5 overflow per process), the 120-second health-check timeout
+and the 3-second liveness cache are reasoned, not measured.
+
+### C7. The scanner has never run in production shape — OPEN. **Severity: MEDIUM**
+
+`run_scheduled_scan` is tested; a real weekday firing against a real universe
+version with real provider data has not happened. Every module's boundary
+forbade it. This is Phase 2's first real test.
+
+### C8. Append-only tables grow without bound — OPEN, measured. **Severity: LOW**
+
+`audit_log`, `login_attempts` and `registration_attempts` cannot be pruned: a
+`DELETE` raises SQLSTATE 23001 from a trigger, and dropping the guard to run a
+retention job destroys the property the table exists for. Module 25 implemented
+measurement instead (`infra/deploy/retention.py`: rows, on-disk bytes, observed
+arrival rate, days-to-threshold at 1 GiB). The migration path — monthly
+declarative partitioning, `DETACH PARTITION` rather than `DELETE` — is
+documented and deliberately unimplemented.
+
+---
+
+## D. Deferred features (deliberate, with reasoning)
+
+### D1. Account recovery / password reset — DEFERRED. **Severity: MEDIUM**
+
+**Deferred by** Module 22, re-affirmed by Module 24. **Verified absent this
+audit:** no `password_reset`, `account_recovery`, `forgot_password` or recovery
+code path exists anywhere in `services/`, `core/` or `infra/`.
+
+This has a consequence Module 24 named and it is worth repeating here: it
+interacts with MFA scope. An admin who enrols TOTP and loses the device has no
+recovery route, and `roles.py` makes an enrolled second factor a hard
+requirement for admin actions rather than an advisory one. Today's mitigation is
+that role changes are made by an operator with database access. That stops being
+adequate the moment a second admin exists.
+
+### D2. Cookie-based sessions for a browser UI — DEFERRED. **Severity: LOW**
+
+**Deferred by** Module 24 on the grounds that no browser UI existed. One exists
+now — ARGUS Public — but it is **unauthenticated by design** and sends no
+credential, so the reasoning still holds unchanged. **Verified absent:** no
+`set_cookie`, `httponly` or `samesite` anywhere in `services/` or `infra/`.
+Revisit when an authenticated browser UI is built, not before.
+
+### D3. Redis / shared rate-limit store — DEFERRED. See C4.
+
+---
+
+## E. Closed since being filed
+
+Recorded so nobody re-opens them from an old report.
+
+### E1. `fundamentals.py` inline-filter drift from Module 07 — **RESOLVED**
+
+**Filed by** Module 09 as deferred. This audit expected to find it open; it is
+closed.
+
+Both lookups in `core/data_validation/fundamentals.py` now go through Module
+07's central helper, `select_latest_as_of` in `core/data_validation/engine.py`.
+Neither inlines a query; there is no bare `select(` in the file. The helper's
+`precedence` parameter was added specifically so
+`get_latest_fundamental_as_of` could express its `fiscal_period_end DESC,
+availability_time DESC` ordering *without* writing its own query — and, as its
+docstring puts it, *"It changes only the ordering, never the filter — every
+caller gets the same `availability_column <= as_of` enforcement regardless."*
+
+### E2. TLS enforcement and HSTS — **RESOLVED** by Module 25
+
+Deferred by Module 24 to "the point that actually terminates TLS."
+`infra/deploy/tls.py` now does it: per-environment HSTS (off in development, 1
+day in staging without subdomains, 1 year with subdomains in production), a 426
+for a credentialed plaintext request and a 308 for an anonymous one, and — a
+correction found by Module 25's own test — HSTS is sent on secure responses
+only, per RFC 6797 §7.2.
+
+### E3. Log retention / rotation policy — **RESOLVED** by Module 25
+
+Deferred by Module 24 as "an operations policy." `infra/deploy/retention.py`
+states it: application logs are JSON on stderr, captured by the platform, and
+are **diagnostic and disposable**; anything that must outlive the platform's
+window is written to `audit_log`. Sessions are pruned 30 days past expiry by a
+daily cron. The three guarded tables are measured rather than pruned (C8).
+
+---
+
+## F. Minor / cosmetic
+
+### F1. `resolve_identity` names two unrelated things — OPEN. **Severity: LOW**
+
+`services/identity/seam.py:resolve_identity(connection, header, ...)` resolves a
+**user**. `services/intelligence/detail.py:resolve_identity(connection,
+security_id, as_of)` resolves a **security's ticker and name**. Different
+domains, identical name, both imported into service modules.
+
+This audit specifically checked whether the second was a smuggled-in second
+identity mechanism. It is not — it never touches users, sessions or tokens. But
+a reader auditing the identity seam has to establish that twice, and a future
+one might not.
+
+---
+
+## Summary
+
+| Severity | Open | Deferred | Closed |
+|---|---|---|---|
+| HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
+| MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
+| LOW | C6, C8, F1 | D2, D3 | — |
+| — | — | — | C2, E1, E2, E3 |
+
+**Three entries here appear in no module report:** A2's Module 11 occurrence,
+A3's structural-test gap, and A4's registry-scan blind spot. All three were
+found by this audit.
+
+A3 and A4 are the same shape and worth reading together: in both cases the
+guarantee currently holds, and the *test that exists to keep it holding* does
+not cover the way it would most likely be broken — A3 scans for an idiom the
+codebase does not use, A4 scans every package except the two where the most
+recent code lives. Neither is a bug today. Both are the reason a bug would not
+be caught tomorrow.
