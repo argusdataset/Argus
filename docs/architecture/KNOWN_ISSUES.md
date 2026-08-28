@@ -303,8 +303,30 @@ What the crashed-then-fixed deploy proves is that the build, image and start
 command work. It does not prove anything after startup. Unconfirmed: TLS
 termination behaviour, the health-check path in the platform's own polling, the
 `preDeployCommand` migration hook, the cron schedules, and whether all seven
-process definitions exist as seven Railway services or one. See **Part D** of
-the audit report — this could not be verified from this environment.
+process definitions exist as seven Railway services or one.
+
+**Attempted and blocked by environment policy, not by a missing URL.** The
+public hostname `argus-production-32f4.up.railway.app` was supplied and probed.
+The audit environment's outbound proxy refuses the connection before it leaves
+the machine:
+
+```
+curl: (56) CONNECT tunnel failed, response 403
+
+$HTTPS_PROXY/__agentproxy/status →
+  "kind":   "connect_rejected",
+  "detail": "gateway answered 403 to CONNECT (policy denial or upstream failure)",
+  "host":   "argus-production-32f4.up.railway.app:443"
+```
+
+Not Railway-specific: the proxy runs a restrictive allowlist. `github.com`
+connects; `example.com` and the Railway host are both refused at CONNECT. No
+workaround was attempted — the standing instruction on egress blocks is to stop
+and report.
+
+**To close this entry**, either allowlist `*.up.railway.app` in the environment's
+network policy, or run the probes externally and hand the output back. The
+commands are in Part D of the audit report.
 
 ### C4. Rate limiter is single-process — OPEN. **Severity: MEDIUM**
 
