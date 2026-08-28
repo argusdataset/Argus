@@ -22,15 +22,46 @@ The connection string is resolved through `SecretsProvider`, not read from
 `os.environ` here, because it carries the password inline. That keeps the
 module-wide invariant intact: every credential in ARGUS comes from one
 place, and there is no second path to audit.
+
+### And it is resolved *first*
+
+`AppConfig` requires `database.port`, `database.name` and
+`database.user`. A platform that injects `DATABASE_URL` injects none of
+them — the connection string is the configuration, as far as it is
+concerned. So loading and validating the config before looking for a
+supplied URL made the supplied-URL path unreachable on precisely the
+platforms it exists for.
+
+That is not hypothetical. ARGUS's first Railway deploy crashed on it:
+
+    pydantic_core.ValidationError: 3 validation errors for AppConfig
+    database.port  Field required
+    database.name  Field required
+    database.user  Field required
+
+...raised from `build_database_url`, with a perfectly good `DATABASE_URL`
+sitting in the environment two lines further down. `_bootstrap_secrets`
+is what fixes the ordering, and it is careful to leave the error intact
+for the case where the config really is incomplete.
 """
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL, make_url
 
-from packages.config import AppConfig, SecretsProvider, get_config, get_secrets_provider
+from packages.config import (
+    AppConfig,
+    ChainedSecretsProvider,
+    DotEnvSecretsProvider,
+    EnvironmentSecretsProvider,
+    SecretsProvider,
+    get_config,
+    get_secrets_provider,
+)
 from packages.config.secrets import SecretNotFoundError
+from packages.config.settings import SecretsSettings
 
 #: Key the database password is stored under in the secrets backend.
 DATABASE_PASSWORD_SECRET = "DATABASE_PASSWORD"
@@ -63,18 +94,26 @@ def build_database_url(
     development and CI supply no `DATABASE_URL`, so they take the discrete
     path exactly as before.
 
+    **The supplied URL is resolved before `AppConfig` is validated**, and
+    the order is the whole point rather than a detail. `AppConfig`
+    requires `database.port`, `database.name` and `database.user`; a
+    platform that injects `DATABASE_URL` injects none of them, because
+    from its point of view the connection string *is* the configuration.
+    Validating first meant the supplied-URL path could never be reached
+    on the platforms it was written for — see the module docstring.
+
     Returns a SQLAlchemy `URL`, not a string: `URL` masks the password in
     its own `repr`, so an accidentally logged URL object does not leak the
     credential. Call `.render_as_string(hide_password=False)` only where
     the real DSN is genuinely needed.
     """
-    cfg = config or get_config()
-    secret_provider = secrets or get_secrets_provider(cfg)
+    secret_provider = secrets or _bootstrap_secrets(config)
 
     supplied = _supplied_url(secret_provider)
     if supplied is not None:
         return supplied
 
+    cfg = config or get_config()
     return URL.create(
         drivername="postgresql+psycopg",
         username=cfg.database.user,
@@ -98,6 +137,36 @@ def create_db_engine(
     different requirements from an API process.
     """
     return create_engine(build_database_url(config, secrets), **engine_kwargs)
+
+
+def _bootstrap_secrets(config: AppConfig | None) -> SecretsProvider:
+    """A provider that can be built before `AppConfig` is known to be valid.
+
+    `get_secrets_provider` reads `cfg.secrets.dotenv_path`, so it needs a
+    complete `AppConfig` — and a deployment supplying only `DATABASE_URL`
+    does not have one. That is a real ordering problem rather than a
+    theoretical one: it is exactly how ARGUS's first Railway deploy
+    crashed, with three `Field required` errors for values the connection
+    string already carried.
+
+    So when the config cannot be loaded, fall back to the default chain
+    (`.env`, then the process environment) purely to look for a supplied
+    URL. If one is there, nothing else was needed. If it is not,
+    `build_database_url` goes on to call `get_config()` and the original
+    validation error surfaces unchanged — which is the right error, since
+    at that point the discrete fields genuinely are missing.
+    """
+    if config is not None:
+        return get_secrets_provider(config)
+    try:
+        return get_secrets_provider()
+    except ValidationError:
+        return ChainedSecretsProvider(
+            [
+                DotEnvSecretsProvider(SecretsSettings().dotenv_path),
+                EnvironmentSecretsProvider(),
+            ]
+        )
 
 
 def _supplied_url(secrets: SecretsProvider) -> URL | None:

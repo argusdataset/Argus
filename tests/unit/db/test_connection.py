@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from infra.db.connection import (
     DATABASE_PASSWORD_SECRET,
     DATABASE_URL_SECRET,
     build_database_url,
+    create_db_engine,
 )
 from packages.config.secrets import SecretNotFoundError, SecretsProvider
-from packages.config.settings import AppConfig
+from packages.config.settings import AppConfig, get_config
 
 REQUIRED_DB_ENV = {
     "ARGUS_DATABASE__HOST": "db.internal",
@@ -194,3 +196,135 @@ def test_the_discrete_path_is_untouched_when_no_url_is_supplied(config: AppConfi
     assert url.render_as_string(hide_password=False) == (
         f"postgresql+psycopg://argus_app:{SECRET_PASSWORD}@db.internal:6543/argus_prod"
     )
+
+
+# --------------------------------------------------------------------------
+# The deployment path: no config argument, and no discrete settings to load
+#
+# Every test above hands `build_database_url` an `AppConfig` it built
+# itself, which is why none of them caught this: the bug only exists when
+# the function has to load its own config, and the environment does not
+# contain one. That is precisely what a deployed process does.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def platform_environment(monkeypatch):
+    """A hosting platform's environment: a connection string and nothing else.
+
+    Railway, Fly and Heroku all inject `DATABASE_URL` and none of the
+    discrete fields — from their point of view the connection string *is*
+    the configuration.
+    """
+    for key in REQUIRED_DB_ENV:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(DATABASE_PASSWORD_SECRET, raising=False)
+    monkeypatch.setenv(
+        DATABASE_URL_SECRET, "postgresql://argus:s3cret@db.railway.internal:5432/railway"
+    )
+    get_config.cache_clear()
+    yield
+    get_config.cache_clear()
+
+
+def test_a_supplied_url_is_enough_on_its_own(platform_environment):
+    """The regression test for ARGUS's first Railway deploy.
+
+    It crashed with three `Field required` errors for `database.port`,
+    `database.name` and `database.user` — values the connection string
+    two lines further down already carried. `AppConfig` was validated
+    before the supplied URL was looked for, which made the supplied-URL
+    path unreachable on exactly the platforms it exists for.
+    """
+    url = build_database_url()
+
+    assert url.host == "db.railway.internal"
+    assert url.database == "railway"
+    assert url.username == "argus"
+    assert url.drivername == "postgresql+psycopg"
+
+
+def test_no_discrete_setting_is_required_when_a_url_is_supplied(platform_environment):
+    """Stated separately from the test above because it is the actual claim.
+
+    A deployment should not have to restate in four variables what one
+    variable already says — and if it did, the two could disagree.
+    """
+    with pytest.raises(ValidationError):
+        AppConfig()
+
+    assert build_database_url() is not None
+
+
+def test_the_engine_is_constructible_from_a_supplied_url_alone(platform_environment):
+    """`create_db_engine()` is what every deployed process actually calls."""
+    engine = create_db_engine()
+    try:
+        assert engine.url.database == "railway"
+    finally:
+        engine.dispose()
+
+
+def test_an_incomplete_config_with_no_url_still_raises_the_original_error(monkeypatch):
+    """The fallback must not swallow a genuinely missing configuration.
+
+    When neither a connection string nor the discrete fields are present,
+    the right outcome is still `AppConfig`'s own validation error naming
+    the three missing values — not a confusing failure from further down.
+    """
+    for key in REQUIRED_DB_ENV:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(DATABASE_URL_SECRET, raising=False)
+    monkeypatch.setattr(
+        "infra.db.connection.SecretsSettings",
+        lambda: type("S", (), {"dotenv_path": "/nonexistent"})(),
+    )
+    get_config.cache_clear()
+    try:
+        with pytest.raises(ValidationError) as invalid:
+            build_database_url()
+    finally:
+        get_config.cache_clear()
+
+    locations = {".".join(str(part) for part in error["loc"]) for error in invalid.value.errors()}
+    assert any(location.startswith("database") for location in locations)
+
+
+def test_the_error_names_the_missing_fields_when_the_config_is_half_set(monkeypatch):
+    """The Railway crash's exact shape, kept as evidence.
+
+    With `ARGUS_DATABASE__HOST` present and the rest absent,
+    pydantic-settings builds a partial nested dict and reports the three
+    fields individually — which is what the deploy log showed:
+
+        database.port  Field required [input_value={'host': 'localhost'}]
+        database.name  Field required
+        database.user  Field required
+    """
+    for key in REQUIRED_DB_ENV:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ARGUS_DATABASE__HOST", "localhost")
+    monkeypatch.delenv(DATABASE_URL_SECRET, raising=False)
+    monkeypatch.setattr(
+        "infra.db.connection.SecretsSettings",
+        lambda: type("S", (), {"dotenv_path": "/nonexistent"})(),
+    )
+    get_config.cache_clear()
+    try:
+        with pytest.raises(ValidationError) as invalid:
+            build_database_url()
+    finally:
+        get_config.cache_clear()
+
+    missing = {error["loc"][-1] for error in invalid.value.errors()}
+    assert {"port", "name", "user"} <= missing
+
+
+def test_a_supplied_url_is_not_consulted_when_a_config_is_given(config: AppConfig):
+    """The explicit-config path keeps its existing provider, unchanged.
+
+    Callers that pass a config — every test above, and Module 03's own
+    fixtures — must not silently start reading a different `.env`.
+    """
+    url = build_database_url(config, StubSecretsProvider())
+    assert url.host == "db.internal"

@@ -101,6 +101,26 @@ except configuration.
 
 ### Secrets
 
+**A connection string is the whole database configuration.** `DATABASE_URL`
+is resolved *before* `AppConfig` is validated, which matters because
+`AppConfig` requires `database.port`, `database.name` and `database.user`
+and a platform injects none of them. Validating first made the
+supplied-URL path unreachable on exactly the platforms it exists for, and
+that is not hypothetical — it is how the first Railway deploy crashed:
+
+```
+pydantic_core.ValidationError: 3 validation errors for AppConfig
+database.port  Field required [input_value={'host': 'localhost'}]
+database.name  Field required
+database.user  Field required
+  File "/app/infra/deploy/asgi.py", line 98, in build_engine
+```
+
+Fixed in `infra/db/connection.py`; `tests/integration/deploy/test_platform_environment.py`
+boots every entrypoint from a connection string and nothing else, so it
+cannot come back.
+
+
 Railway environment variables → `EnvironmentSecretsProvider` → the
 existing `SecretsProvider` chain. No new mechanism, and nothing in
 `railway/*.json` names a variable: the generated config lists build and
@@ -112,7 +132,7 @@ The variables a deployment sets:
 | Variable                     | Required | Notes |
 | ---------------------------- | -------- | ----- |
 | `ARGUS_ENV`                  | yes      | Selects the profile. |
-| `DATABASE_URL`               | yes      | Railway injects it; normalized to the `psycopg` driver in `infra/db/connection.py`. |
+| `DATABASE_URL`               | yes      | Railway injects it. Normalized to the `psycopg` driver, and **sufficient on its own** — none of the `ARGUS_DATABASE__*` fields are needed alongside it. |
 | `FMP_API_KEY`                | yes      | Read only through `SecretsProvider`. |
 | `ARGUS_CORS_ORIGINS`         | yes in staging/production | Comma-separated. Empty in production means no browser origin is allowed, which is a working state, not a broken one. |
 | `ARGUS_UNIVERSE_VERSION`     | yes for `scanner` | Label or id. The scanner refuses to guess — see `scanner.py`. |
@@ -434,11 +454,19 @@ Written as a list of things that are **not done**, not as caveats.
    the image was written and reviewed but never built or run. Every claim
    about it is a claim about its source, not about a container that
    exists. Build it and run all seven commands before trusting any of §1.
-3. **Nothing has ever run against Railway.** The configs in `railway/`
-   are generated correctly and match `processes.py`; they have not been
-   applied to a project. TLS termination, the health-check path, the
-   pre-deploy hook and the cron schedules are all as documented and none
-   is confirmed.
+3. **Railway has been reached, and the first deploy crashed.** On a
+   configuration-ordering bug, now fixed and regression-tested (see
+   §2). What that proves is that the build, the image and the start
+   command work; what it does not prove is anything after startup. TLS
+   termination, the health-check path, the pre-deploy hook and the cron
+   schedules remain as documented and unconfirmed.
+
+   The lesson is worth keeping separately from the bug: a suite of 2,204
+   tests passed while the deployed process could not start, because every
+   test that touched configuration built one and handed it in. Nothing
+   ran the path a container runs. `test_platform_environment.py` is now
+   that path, and any future configuration source should be added to it
+   before it is added anywhere else.
 4. **The rate limiter is single-process.** `WEB_CONCURRENCY` is 1 and a
    production process refuses to boot with more, which contains the
    problem rather than solving it. Horizontal scaling — replicas, not
