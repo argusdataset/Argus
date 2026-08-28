@@ -86,6 +86,10 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     # counts is immutable — which is also why the count is "failures
     # since the last success" rather than a counter reset on success.
     "login_attempts",
+    # Added with the table in migration 0013 (Module 24). The same
+    # reasoning as login_attempts, applied to registration: a per-source
+    # signup limit clearable by deleting its own evidence is not a limit.
+    "registration_attempts",
 )
 
 #: Reject DELETE and TRUNCATE, but allow UPDATE.

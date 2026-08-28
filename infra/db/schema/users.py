@@ -159,6 +159,23 @@ login_attempts = Table(
     comment="Append-only record of every authentication attempt (Module 22).",
 )
 
+registration_attempts = Table(
+    "registration_attempts",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()),
+    Column("ip_address", Text, nullable=True),
+    Column("succeeded", Boolean, nullable=False),
+    # "email_taken", "weak_password", "rate_limited". Never the credential.
+    Column("reason", Text, nullable=True),
+    # Recorded for an operator's visibility, not part of the lockout key
+    # — see migration 0013 on why this table counts by source address
+    # alone.
+    Column("email", Text, nullable=True),
+    Column("attempted_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("ix_registration_attempts_address", "ip_address", "attempted_at"),
+    comment="Append-only record of every registration attempt, by source address (Module 24).",
+)
+
 audit_log = Table(
     "audit_log",
     metadata,

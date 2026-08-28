@@ -179,6 +179,21 @@ AUDIT: tuple[OrderedRead, ...] = (
             "single latest row, so a tie would not change its answer."
         ),
     ),
+    OrderedRead(
+        table="registration_attempts",
+        ordering="attempted_at",
+        parent="ip_address",
+        readers=("services.identity.attempts",),
+        safe=True,
+        basis=(
+            "Module 24's own new table, added to this registry when it introduced it "
+            "rather than left for the next audit to find. `attempted_at` is written "
+            "from Python's clock per call, matching `login_attempts` above — but "
+            "`registration_lockout_state` does not even take 'the latest row': it "
+            "sums every attempt in the window with `func.count()`, never picks one "
+            "and calls it current. There is no winner for a tie to make ambiguous."
+        ),
+    ),
     # ---- safe: ordering is for display, nothing depends on the winner
     OrderedRead(
         table="market_state",

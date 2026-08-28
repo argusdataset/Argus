@@ -37,6 +37,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
 
+from infra.security.client_ip import resolve_client_ip
+from infra.security.config import SecurityConfig
+from infra.security.middleware import harden
 from services.identity import accounts, mfa, sessions
 from services.identity.config import IdentityConfig
 from services.identity.errors import (
@@ -60,7 +63,11 @@ from services.identity.tokens import bearer_token
 __all__ = ["create_app", "current_session_user", "get_connection"]
 
 
-def create_app(engine: Engine, config: IdentityConfig | None = None) -> FastAPI:
+def create_app(
+    engine: Engine,
+    config: IdentityConfig | None = None,
+    security: SecurityConfig | None = None,
+) -> FastAPI:
     settings = config or IdentityConfig()
 
     app = FastAPI(
@@ -84,7 +91,7 @@ def create_app(engine: Engine, config: IdentityConfig | None = None) -> FastAPI:
     app.include_router(_account_router())
     app.include_router(_mfa_router())
     app.include_router(_admin_router())
-    return app
+    return harden(app, security=security)
 
 
 # --------------------------------------------------------------------------
@@ -180,16 +187,23 @@ UserDep = Annotated[UUID, Depends(current_session_user)]
 
 
 def client_address(request: Request) -> str | None:
-    """The source address, for the attempt log.
+    """The source address, for the attempt log and the per-source lockouts.
 
-    Reads `request.client` and deliberately not `X-Forwarded-For`: behind
-    no proxy that header is attacker-controlled, and trusting it would let
-    anyone evade the per-source lockout by sending a different value each
-    request. A deployment behind a real proxy has to configure trusted
-    forwarding at the ASGI layer, which is Module 23's concern and is
-    flagged in this module's report.
+    Module 22 read `request.client` and deliberately not
+    `X-Forwarded-For`, because behind no proxy that header is
+    attacker-controlled. Module 24 closes the other half of that: behind
+    a *real* proxy, refusing the header entirely means every request
+    arrives from the proxy's one address, and the per-source lockout
+    becomes a global one that a single attacker can trip to lock out
+    everyone behind that proxy.
+
+    `resolve_client_ip` is the fix — trust the header only from a
+    TCP peer this deployment has explicitly configured as a proxy, and
+    fall back to `request.client.host` (Module 22's original behaviour)
+    for everyone else, including an unconfigured deployment. See
+    `infra/security/client_ip.py`.
     """
-    return request.client.host if request.client else None
+    return resolve_client_ip(request, request.app.state.security.settings)
 
 
 AddressDep = Annotated[str | None, Depends(client_address)]

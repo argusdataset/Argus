@@ -179,6 +179,38 @@ class IdentitySettings:
         )
     )
 
+    # ---- registration -------------------------------------------------
+    max_registrations_per_address: IdentitySetting = field(
+        default_factory=lambda: _s(
+            10.0,
+            SECURITY,
+            "Registrations from one source address inside the window before it locks. "
+            "Module 24's answer to bulk account creation — the volume attack "
+            "per-account login limits are blind to, because registration has no "
+            "account yet to key a limit on. Looser than the login per-source figure: "
+            "a shared address creating ten accounts in fifteen minutes is already "
+            "unusual, whereas twenty-five failed logins from an office NAT is a "
+            "Tuesday.",
+        )
+    )
+    registration_window_minutes: IdentitySetting = field(
+        default_factory=lambda: _s(
+            15.0,
+            SECURITY,
+            "Matches `lockout_window_minutes`'s shape: how far back registrations "
+            "are counted, so an address that signed up a handful of times last "
+            "month is never affected.",
+        )
+    )
+    registration_lockout_minutes: IdentitySetting = field(
+        default_factory=lambda: _s(
+            15.0,
+            SECURITY,
+            "How long a source address is refused new registrations once it trips "
+            "the limit. Matches `lockout_minutes`'s shape and reasoning.",
+        )
+    )
+
     # ---- MFA --------------------------------------------------------
     totp_step_seconds: IdentitySetting = field(
         default_factory=lambda: _s(
@@ -239,6 +271,14 @@ class IdentitySettings:
     @property
     def lockout_seconds(self) -> float:
         return self.lockout_minutes.value * 60.0
+
+    @property
+    def registration_window_seconds(self) -> float:
+        return self.registration_window_minutes.value * 60.0
+
+    @property
+    def registration_lockout_seconds(self) -> float:
+        return self.registration_lockout_minutes.value * 60.0
 
 
 @dataclass(frozen=True, slots=True)

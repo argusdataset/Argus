@@ -46,6 +46,7 @@ __all__ = [
     "MFA_CODE_REQUIRED",
     "MFA_NOT_ENROLLED",
     "MFA_REQUIRED",
+    "REGISTRATION_LOCKED",
     "SESSION_INVALID",
     "WEAK_PASSWORD",
     "IdentityError",
@@ -56,6 +57,10 @@ __all__ = [
 INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 #: Too many recent failures. Names when the lockout lifts.
 ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+#: Too many registrations from this source address. Module 24. Names
+#: when the lockout lifts, for the same reason ACCOUNT_LOCKED does — the
+#: caller already knows they are being rate limited.
+REGISTRATION_LOCKED = "REGISTRATION_LOCKED"
 #: The account exists and is disabled. Distinct from a bad password
 #: because the caller proved the password before seeing this.
 ACCOUNT_INACTIVE = "ACCOUNT_INACTIVE"

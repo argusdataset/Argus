@@ -48,6 +48,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
 
+from infra.security.config import SecurityConfig
+from infra.security.middleware import harden
 from services.public_stats.aggregates import CHARTS
 from services.public_stats.config import PublicStatsConfig
 from services.public_stats.errors import CHART_NOT_FOUND, PublicStatsError
@@ -65,7 +67,11 @@ from services.public_stats.snapshots import read_chart
 __all__ = ["create_app"]
 
 
-def create_app(engine: Engine, config: PublicStatsConfig | None = None) -> FastAPI:
+def create_app(
+    engine: Engine,
+    config: PublicStatsConfig | None = None,
+    security: SecurityConfig | None = None,
+) -> FastAPI:
     """Build the public stats app against a database engine."""
     settings = config or PublicStatsConfig()
 
@@ -89,7 +95,7 @@ def create_app(engine: Engine, config: PublicStatsConfig | None = None) -> FastA
 
     app.include_router(_charts_router())
     app.include_router(_releases_router())
-    return app
+    return harden(app, security=security)
 
 
 # --------------------------------------------------------------------------

@@ -9,18 +9,31 @@ from services.identity.accounts import (
     Account,
     account_for,
     change_password,
+    change_role,
     deactivate,
     log_in,
     log_out,
     register,
 )
 from services.identity.app import create_app
-from services.identity.attempts import Lockout, lockout_state, record_attempt
+from services.identity.attempts import (
+    Lockout,
+    RegistrationLockout,
+    lockout_state,
+    record_attempt,
+    record_registration_attempt,
+    registration_lockout_state,
+)
 from services.identity.audit import ACTIONS, CredentialInPayload, record
 from services.identity.config import SECURITY, IdentityConfig, IdentitySettings
 from services.identity.errors import IdentityError
 from services.identity.mfa import Enrolment, begin_enrolment, complete_enrolment, verify_code
-from services.identity.passwords import PasswordTooWeak, hash_password, verify_password
+from services.identity.passwords import (
+    PasswordTooWeak,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
 from services.identity.roles import ADMIN, PUBLIC, REGISTERED_USER, require_role
 from services.identity.seam import resolve_identity
 from services.identity.sessions import IssuedSession, SessionRecord
@@ -42,11 +55,13 @@ __all__ = [
     "IssuedSession",
     "Lockout",
     "PasswordTooWeak",
+    "RegistrationLockout",
     "SessionRecord",
     "account_for",
     "begin_enrolment",
     "bearer_token",
     "change_password",
+    "change_role",
     "complete_enrolment",
     "create_app",
     "deactivate",
@@ -55,9 +70,12 @@ __all__ = [
     "lockout_state",
     "log_in",
     "log_out",
+    "needs_rehash",
     "record",
     "record_attempt",
+    "record_registration_attempt",
     "register",
+    "registration_lockout_state",
     "require_role",
     "resolve_identity",
     "verify_code",

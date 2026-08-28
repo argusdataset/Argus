@@ -52,6 +52,8 @@ from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
 
 from core.market_state.watchlists import WATCHLIST_NAMES
+from infra.security.config import SecurityConfig
+from infra.security.middleware import harden
 from services.intelligence.cases import read_case
 from services.intelligence.config import IntelligenceConfig
 from services.intelligence.detail import read_detail
@@ -69,7 +71,11 @@ from services.terminal.identity import USER_HEADER, current_user_id
 __all__ = ["create_app"]
 
 
-def create_app(engine: Engine, config: IntelligenceConfig | None = None) -> FastAPI:
+def create_app(
+    engine: Engine,
+    config: IntelligenceConfig | None = None,
+    security: SecurityConfig | None = None,
+) -> FastAPI:
     settings = config or IntelligenceConfig()
 
     app = FastAPI(
@@ -94,7 +100,7 @@ def create_app(engine: Engine, config: IntelligenceConfig | None = None) -> Fast
     app.include_router(_watchlist_router())
     app.include_router(_security_router())
     app.include_router(_case_router())
-    return app
+    return harden(app, security=security)
 
 
 # --------------------------------------------------------------------------

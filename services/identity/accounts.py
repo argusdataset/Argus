@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,17 +48,24 @@ from services.identity.errors import (
     ACCOUNT_LOCKED,
     EMAIL_TAKEN,
     MFA_CODE_REQUIRED,
+    REGISTRATION_LOCKED,
     WEAK_PASSWORD,
     IdentityError,
     invalid_credentials,
 )
-from services.identity.passwords import PasswordTooWeak, hash_password, verify_password
-from services.identity.roles import REGISTERED_USER, role_id_for
+from services.identity.passwords import (
+    PasswordTooWeak,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
+from services.identity.roles import REGISTERED_USER, role_id_for, role_of
 
 __all__ = [
     "Account",
     "account_for",
     "change_password",
+    "change_role",
     "deactivate",
     "log_in",
     "log_out",
@@ -93,13 +101,45 @@ def register(
     separate act with its own lockout accounting and its own audit
     record, and folding it in here would create a second path to a
     session that skips both.
+
+    Rate limited per source address (Module 24), checked first so a
+    locked-out address gets a cheap refusal before ARGUS spends an argon2
+    hash on it — the same ordering `log_in` uses and for the same reason.
     """
     settings = settings or IdentitySettings()
     address = attempts.normalise_email(email)
 
+    registration_lockout = attempts.registration_lockout_state(
+        connection, ip_address=ip_address, settings=settings
+    )
+    if registration_lockout.locked:
+        # Recorded too, so continued hammering keeps extending the record
+        # an operator reads — the same reasoning `log_in`'s lockout branch
+        # gives for doing this rather than refusing silently.
+        attempts.record_registration_attempt(
+            connection,
+            ip_address=ip_address,
+            succeeded=False,
+            email=address,
+            reason="rate_limited",
+        )
+        raise IdentityError(
+            REGISTRATION_LOCKED,
+            "Too many accounts have been created from this address recently. Try again later.",
+            status=429,
+            detail={"retry_after_seconds": int(registration_lockout.seconds_remaining())},
+        )
+
     try:
         password_hash = hash_password(password, settings=settings)
     except PasswordTooWeak as weak:
+        attempts.record_registration_attempt(
+            connection,
+            ip_address=ip_address,
+            succeeded=False,
+            email=address,
+            reason="weak_password",
+        )
         raise IdentityError(
             WEAK_PASSWORD,
             str(weak),
@@ -108,6 +148,13 @@ def register(
         ) from weak
 
     if _user_by_email(connection, address) is not None:
+        attempts.record_registration_attempt(
+            connection,
+            ip_address=ip_address,
+            succeeded=False,
+            email=address,
+            reason="email_taken",
+        )
         raise IdentityError(
             EMAIL_TAKEN,
             "An account already exists for this address.",
@@ -126,6 +173,9 @@ def register(
         .returning(users.c.id)
     ).scalar_one()
 
+    attempts.record_registration_attempt(
+        connection, ip_address=ip_address, succeeded=True, email=address
+    )
     audit.record(
         connection,
         audit.REGISTERED,
@@ -194,6 +244,8 @@ def log_in(
         )
 
     assert row is not None  # verify_password returns False for a missing hash
+
+    _rehash_if_outdated(connection, row, password, settings=settings)
 
     if not row.is_active:
         raise _fail(
@@ -375,6 +427,61 @@ def account_for(connection: Connection, user_id: UUID) -> Account:
     return _account(connection, user_id)
 
 
+def change_role(
+    connection: Connection,
+    user_id: UUID,
+    new_role: str,
+    *,
+    actor_user_id: UUID | None = None,
+    ip_address: str | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Change a user's role and end every session. Returns sessions ended.
+
+    Module 22 deliberately built no HTTP endpoint to grant a role —
+    "granting yourself admin over HTTP is the first thing worth not
+    building" — and this function does not change that: it is called by
+    whoever performs a role change, not exposed as a route. What it adds
+    is the consequence Module 24's hardening pass asked for: a role is a
+    privilege boundary, and a session issued under the old one should not
+    go on being trusted under the new one.
+
+    Every session ends, not just the ones a heuristic guesses might be
+    suspicious. A promotion to `admin` with the account's own existing
+    session left alive would mean the elevated privilege took effect
+    without ever being re-authenticated into — indistinguishable, from
+    the session's side, from a takeover that happened to coincide with a
+    promotion. Signing in again is a trivial cost for a rare event.
+
+    Raises `ValueError` for a `user_id` naming nobody. `users.role_id` is
+    NOT NULL, so `role_of` returning `None` here can only mean the user
+    does not exist — silently no-op'ing would leave an audit row claiming
+    a role change that never happened to an account that never existed,
+    which is a worse failure than refusing loudly.
+    """
+    now = now or datetime.now(UTC)
+    previous = role_of(connection, user_id)
+    if previous is None:
+        raise ValueError(f"No user {user_id}; there is no role to change.")
+
+    connection.execute(
+        users.update()
+        .where(users.c.id == user_id)
+        .values(role_id=role_id_for(connection, new_role), updated_at=now)
+    )
+    ended = sessions.revoke_all_for_user(connection, user_id, now=now)
+
+    audit.record(
+        connection,
+        audit.ROLE_CHANGED,
+        actor_user_id=actor_user_id or user_id,
+        entity_id=user_id,
+        payload={"from_role": previous, "to_role": new_role, "sessions_ended": ended},
+        ip_address=ip_address,
+    )
+    return ended
+
+
 # --------------------------------------------------------------------------
 # Internals
 # --------------------------------------------------------------------------
@@ -385,8 +492,6 @@ def _user_by_email(connection: Connection, address: str):
 
 
 def _account(connection: Connection, user_id: UUID) -> Account:
-    from services.identity.roles import role_of
-
     row = connection.execute(select(users).where(users.c.id == user_id)).one()
     return Account(
         user_id=row.id,
@@ -395,6 +500,33 @@ def _account(connection: Connection, user_id: UUID) -> Account:
         role=role_of(connection, user_id) or "",
         mfa_enabled=bool(row.mfa_enabled),
         is_active=bool(row.is_active),
+    )
+
+
+def _rehash_if_outdated(
+    connection: Connection, row: Any, password: str, *, settings: IdentitySettings
+) -> None:
+    """Upgrade a password's hash in place, if it was made under weaker parameters.
+
+    Login is the only moment the plaintext exists to rehash with — by the
+    time a stored hash is read back for any other purpose, the password
+    itself is gone. `needs_rehash` existed since Module 22 with nothing
+    calling it; this is that call site, and the only one there needs to
+    be, since raising the configured cost is rare enough that catching it
+    at the next sign-in is an acceptable delay.
+
+    Runs strictly after `verify_password` has already returned — never
+    inside the branch the timing-parity test measures, and never on a
+    failed attempt, so it cannot become a new place that answers "was
+    this password right" in a different amount of time than "was it
+    wrong".
+    """
+    if not needs_rehash(row.password_hash, settings=settings):
+        return
+    connection.execute(
+        users.update()
+        .where(users.c.id == row.id)
+        .values(password_hash=hash_password(password, settings=settings))
     )
 
 

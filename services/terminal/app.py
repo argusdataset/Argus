@@ -50,6 +50,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Engine
 from sqlalchemy.engine import Connection
 
+from infra.security.config import SecurityConfig
+from infra.security.middleware import harden
 from services.terminal import company, datafeed, freshness, news, watchlists
 from services.terminal.config import TerminalConfig
 from services.terminal.errors import TerminalError
@@ -85,7 +87,11 @@ class WatchlistTickerRequest(BaseModel):
     )
 
 
-def create_app(engine: Engine, config: TerminalConfig | None = None) -> FastAPI:
+def create_app(
+    engine: Engine,
+    config: TerminalConfig | None = None,
+    security: SecurityConfig | None = None,
+) -> FastAPI:
     """Build the Terminal app against a database engine.
 
     The engine is injected rather than constructed here so a test can
@@ -115,7 +121,7 @@ def create_app(engine: Engine, config: TerminalConfig | None = None) -> FastAPI:
     app.include_router(_datafeed_router())
     app.include_router(_watchlist_router())
     app.include_router(_status_router())
-    return app
+    return harden(app, security=security)
 
 
 # --------------------------------------------------------------------------

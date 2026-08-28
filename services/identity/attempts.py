@@ -58,7 +58,7 @@ from uuid import UUID
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.engine import Connection
 
-from infra.db.schema.users import login_attempts
+from infra.db.schema.users import login_attempts, registration_attempts
 from services.identity.config import IdentitySettings
 
 __all__ = [
@@ -68,9 +68,12 @@ __all__ = [
     "MFA_FAILED",
     "NO_SUCH_USER",
     "Lockout",
+    "RegistrationLockout",
     "lockout_state",
     "normalise_email",
     "record_attempt",
+    "record_registration_attempt",
+    "registration_lockout_state",
 ]
 
 #: Failure reasons. Descriptive for an operator; never the credential.
@@ -205,6 +208,16 @@ def _recent_failures(
     table cannot have. A successful login therefore clears the count
     without erasing the history — the failures stay on the record for
     whoever reads this table after an incident.
+
+    Fixed to `login_attempts` rather than taking a table parameter —
+    `column` alone (`login_attempts.c.email` or `.c.ip_address`) already
+    tells the query which table it is reading, so a second parameter
+    naming the same table again would say nothing a reader could not see
+    from `column` itself.
+
+    Not reused by registration: `registration_lockout_state` counts every
+    attempt in the window rather than failures since the last success —
+    see its own docstring for why that rule does not fit login's here.
     """
     last_success = connection.execute(
         select(func.max(login_attempts.c.attempted_at)).where(
@@ -228,6 +241,103 @@ def _recent_failures(
     ).one()
 
     return _Failures(count=int(row.count or 0), latest=row.latest or window_start)
+
+
+# --------------------------------------------------------------------------
+# Registration: the same rule, keyed on source address alone
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationLockout:
+    """Whether this source address may register another account."""
+
+    locked: bool
+    until: datetime | None = None
+    attempts: int = 0
+
+    def seconds_remaining(self, *, now: datetime | None = None) -> float:
+        if self.until is None:
+            return 0.0
+        now = now or datetime.now(UTC)
+        return max(0.0, (self.until - now).total_seconds())
+
+
+def record_registration_attempt(
+    connection: Connection,
+    *,
+    ip_address: str | None,
+    succeeded: bool,
+    email: str | None = None,
+    reason: str | None = None,
+    at: datetime | None = None,
+) -> None:
+    """Append one registration attempt. Both outcomes, for the same reason
+    `record_attempt` does: a log holding only failures cannot answer
+    whether an address that tripped the limit ever actually completed one.
+    """
+    connection.execute(
+        registration_attempts.insert().values(
+            ip_address=ip_address,
+            succeeded=succeeded,
+            reason=reason,
+            email=normalise_email(email) if email else None,
+            attempted_at=at or datetime.now(UTC),
+        )
+    )
+
+
+def registration_lockout_state(
+    connection: Connection,
+    *,
+    ip_address: str | None,
+    settings: IdentitySettings | None = None,
+    now: datetime | None = None,
+) -> RegistrationLockout:
+    """Whether this source address is currently locked out of registering.
+
+    Deliberately **not** `_recent_failures`'s "since the last success"
+    rule, even though the shapes look alike. That rule is correct for
+    login because a success is proof the real owner got in, so it is fine
+    to stop counting against them. Registration has no such proof: a
+    volume attacker's signups mostly *succeed* — each one is a genuine new
+    account — so "since the last success" would reset to zero after every
+    one and provide no protection against the exact thing being defended
+    against. This counts every attempt, successful or not, in the window.
+
+    No address to key on with `ip_address=None` — an unknown source is
+    never locked, because there is nothing to count against. The endpoint
+    still works; it simply gets no protection from this mechanism, the
+    same posture Module 22's login lockout takes when the address is
+    unavailable.
+    """
+    if not ip_address:
+        return RegistrationLockout(locked=False)
+
+    settings = settings or IdentitySettings()
+    now = now or datetime.now(UTC)
+    window_start = now - timedelta(seconds=settings.registration_window_seconds)
+
+    row = connection.execute(
+        select(
+            func.count().label("count"),
+            func.max(registration_attempts.c.attempted_at).label("latest"),
+        ).where(
+            and_(
+                registration_attempts.c.ip_address == ip_address,
+                registration_attempts.c.attempted_at > window_start,
+            )
+        )
+    ).one()
+    count = int(row.count or 0)
+
+    if count >= int(settings.max_registrations_per_address):
+        return RegistrationLockout(
+            locked=True,
+            until=(row.latest or now) + timedelta(seconds=settings.registration_lockout_seconds),
+            attempts=count,
+        )
+    return RegistrationLockout(locked=False, attempts=count)
 
 
 def recent_attempts(
