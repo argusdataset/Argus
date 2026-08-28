@@ -1,0 +1,44 @@
+# Everything the image does not need, and two things it must never have.
+#
+# `.env` is the second. It is gitignored, so it cannot arrive through the
+# repository — but a Docker build context is the working directory, not
+# the git index, so an untracked `.env` sitting next to the Dockerfile
+# would be copied straight into a layer. Baking a credential into an
+# image is worse than committing one: the image is pushed to a registry,
+# layers are cached and shared, and there is no `git rm` for a published
+# layer.
+.env
+.env.*
+!.env.example
+
+# The local virtualenv. Copying it in would shadow the one the builder
+# creates, with host-compiled binaries that may not match the image's
+# architecture or libc.
+.venv/
+venv/
+
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Tests are deliberately excluded. They are run in CI against the source,
+# not in the image against a deployment: shipping them would add the test
+# fixtures — including `tests/fixtures/security/planted_credential.py`,
+# which exists specifically to look like a leaked key — to a production
+# artifact.
+tests/
+
+# Provider response cache and checkpoints. Local development artefacts
+# that would be stale in an image and large.
+.cache/
+
+docs/
+*.md
+!README.md

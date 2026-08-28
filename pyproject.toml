@@ -36,6 +36,12 @@ dependencies = [
     # window — are exactly the ones a library gets right. Replay
     # protection is ARGUS's own, in services/identity/mfa.py.
     "pyotp>=2.9",
+    # Module 25's ASGI server. FastAPI needs one to actually serve, and
+    # until this module there was nowhere to serve from — Modules 19-22
+    # built apps that only ever ran under `TestClient`. `[standard]`
+    # brings httptools and uvloop, which is what makes it a production
+    # server rather than a development one.
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]

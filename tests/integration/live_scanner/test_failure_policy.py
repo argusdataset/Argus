@@ -540,7 +540,5 @@ def test_a_failed_scans_partial_writes_are_discarded(
         )
 
     assert outcome.status is LiveScanStatus.FAILED
-    written = connection.execute(
-        select(func.count()).select_from(feature_vectors)
-    ).scalar_one()
+    written = connection.execute(select(func.count()).select_from(feature_vectors)).scalar_one()
     assert written == 0, "a failed scan left partial results behind"
