@@ -42,6 +42,14 @@ and the health service, which already serves the path, is wrapped with
 `claim_path=False` so its own answer is the one that reaches the
 platform.
 
+`public_stats` alone carries one more layer, inside all of the above:
+`mount_public_web` (`infra/deploy/public_web.py`) attaches ARGUS Public's
+static frontend to the same FastAPI instance `create_app()` returns,
+before this file wraps it in liveness and TLS policy like every other
+service. Same reasoning as `LivenessMiddleware` — a frontend is a
+deployment concern, not application logic, so it is composed on rather
+than built into Module 20.
+
 ## The engine is created once, at import, per process
 
 Every other `create_engine` call in ARGUS is at the point of use, because
@@ -144,9 +152,10 @@ def _terminal(engine: Engine, *, security: Any) -> FastAPI:
 
 
 def _public_stats(engine: Engine, *, security: Any) -> FastAPI:
+    from infra.deploy.public_web import mount_public_web
     from services.public_stats.app import create_app
 
-    return create_app(engine, security=security)
+    return mount_public_web(create_app(engine, security=security))
 
 
 def _intelligence(engine: Engine, *, security: Any) -> FastAPI:

@@ -61,6 +61,12 @@ COPY infra/ ./infra/
 COPY services/ ./services/
 RUN pip install --no-deps .
 
+# ARGUS Public's static frontend. Not a Python package — nothing here is
+# `pip install`ed — but `infra/deploy/public_web.py` mounts it onto the
+# public_stats app at runtime, so it has to be on disk next to the code
+# that reads it. See that module for why it lives outside `services/`.
+COPY web/ ./web/
+
 # ---------------------------------------------------------------------
 # Stage 2 — runtime
 # ---------------------------------------------------------------------

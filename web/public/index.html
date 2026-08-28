@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARGUS — Public Track Record</title>
+<meta name="description" content="How ARGUS has actually performed, including every failure. No login required." />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <div class="wordmark">ARGUS</div>
+    <div class="tagline">Don't manufacture demand, create undeniable value.</div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="panel about" id="about">
+    <h1>The public track record</h1>
+    <p>
+      ARGUS is a systematic equity research tool. It detects setups, scores them,
+      tracks what actually happens to them, and publishes the result — the wins
+      and the losses both — once a named human has reviewed and approved the
+      figures for release.
+    </p>
+    <p>
+      This page has no login and shows everyone the same numbers. There is no
+      version of this page that looks better to a prospective customer than to
+      a skeptic. That is deliberate: a system whose entire pitch is "trust the
+      evidence" has to let anyone check the evidence.
+    </p>
+    <p class="disclaimer">
+      <strong>This is not investment advice.</strong> Nothing on this page is a
+      recommendation to buy, sell, or hold any security. Past performance,
+      however honestly reported, does not predict future results.
+    </p>
+  </section>
+
+  <section class="panel status" id="status" aria-live="polite">
+    <div class="status-loading">Loading publication status…</div>
+  </section>
+
+  <section class="charts" id="charts">
+    <article class="panel chart-panel" id="chart-win_rate" data-chart="win_rate">
+      <h2>Win rate</h2>
+      <div class="chart-body"><div class="chart-loading">Loading…</div></div>
+    </article>
+
+    <article class="panel chart-panel" id="chart-cumulative_performance" data-chart="cumulative_performance">
+      <h2>Cumulative performance</h2>
+      <div class="chart-body"><div class="chart-loading">Loading…</div></div>
+    </article>
+
+    <article class="panel chart-panel" id="chart-regime_breakdown" data-chart="regime_breakdown">
+      <h2>Regime breakdown</h2>
+      <div class="chart-body"><div class="chart-loading">Loading…</div></div>
+    </article>
+
+    <article class="panel chart-panel" id="chart-excursion_distribution" data-chart="excursion_distribution">
+      <h2>MFE / MAE distribution</h2>
+      <div class="chart-body"><div class="chart-loading">Loading…</div></div>
+    </article>
+  </section>
+
+  <section class="panel releases" id="releases">
+    <h2>Live-tracking release windows</h2>
+    <p class="section-note">
+      Every decision the review gate has made about a window of live-tracked
+      outcomes — approvals and rejections both, in order. A window not listed
+      here has never been approved for publication.
+    </p>
+    <div id="releases-body"><div class="chart-loading">Loading…</div></div>
+  </section>
+
+  <section class="panel about-footer">
+    <h2>About this page</h2>
+    <p>
+      This is a functional first version of ARGUS's public page, connected to
+      the live statistics API. It intentionally prioritizes correctness over
+      visual polish — a proper design pass comes later. Every number here is
+      read directly from what ARGUS has approved for publication; nothing is
+      illustrative or placeholder data.
+    </p>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>ARGUS Public Statistics — not investment advice.</span>
+  </div>
+</footer>
+
+<script src="./app.js"></script>
+</body>
+</html>
