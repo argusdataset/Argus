@@ -14,3 +14,9 @@ compiled in one place by the Phase 1 full integration audit. Before this
 existed that information was spread across 25+ individual reports, each written
 by a session that could not see the others. An entry leaves it by being fixed
 and having its fix pointed at — not by being forgotten.
+
+`PHASE1_AUDIT_REPORT.pdf` is that audit's findings as a document, for reading
+away from a terminal. `build_phase1_audit_report.py` regenerates it — committed
+beside it so the report is reproducible rather than an artefact nobody can
+rebuild. It needs `reportlab`, which is deliberately not an ARGUS dependency:
+nothing the system runs depends on being able to draw a PDF.
