@@ -67,6 +67,9 @@ outage and is not one.
 
 from __future__ import annotations
 
+import contextlib
+import sys
+import traceback
 from typing import Any
 
 from fastapi import FastAPI
@@ -187,6 +190,63 @@ SERVICES: dict[str, Any] = {
 }
 
 
+#: Written to stderr the instant a factory is entered, before logging is
+#: configured and before anything that could fail. Deliberately a bare
+#: `print`, not a log record: it has no dependency on `configure_logging`
+#: having worked, on a formatter, or on a handler.
+#:
+#: Its value is what its *absence* proves. A deploy log that contains this
+#: line and nothing else means the factory was entered and died inside;
+#: a deploy log without it means the factory was never called at all —
+#: which is a platform or start-command problem, not an application one.
+#: Distinguishing those two took an entire debugging session once.
+_ENTERED = "argus.startup: building service"
+
+
+def _announce(name: str) -> None:
+    print(f"{_ENTERED} name={name}", file=sys.stderr, flush=True)
+
+
+def _report_startup_failure(name: str, failure: BaseException) -> None:
+    """Say loudly why a service could not be built, then let it die.
+
+    Two channels on purpose, because they fail independently:
+
+    1. A structured record, so the failure is queryable alongside every
+       other ARGUS log and carries `event=service_startup_failed`.
+    2. A plain traceback on stderr, flushed, because the structured path
+       depends on `configure_logging` having succeeded — and if *that* is
+       what broke, the structured record is exactly what will not appear.
+
+    Never swallows. The caller re-raises so the process still exits
+    non-zero and the deploy is still abandoned; the only thing this adds
+    is that somebody can tell what happened.
+    """
+    # Suppressed on purpose: if `configure_logging` is what broke, the
+    # structured record is exactly what cannot be written, and the stderr
+    # fallback below is the only channel left. Losing the log line must
+    # never cost the traceback.
+    with contextlib.suppress(Exception):
+        _log.exception(
+            "service failed to start",
+            extra={
+                "event": "service_startup_failed",
+                "service": name,
+                "error_type": type(failure).__name__,
+                "error": str(failure),
+            },
+        )
+
+    print(
+        f"argus.startup: FAILED to build service name={name} "
+        f"error_type={type(failure).__name__} error={failure}",
+        file=sys.stderr,
+        flush=True,
+    )
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+
+
 def _module_app(name: str) -> Any:
     """Build one service at import, configuring logging first.
 
@@ -199,9 +259,28 @@ def _module_app(name: str) -> Any:
     what stops an in-process Alembic migration from replacing the
     handler. Module 23 found that the hard way; this is the call site
     that makes the fix apply in production rather than only in its test.
+
+    ## Why the whole body is wrapped
+
+    Uvicorn calls this through `--factory`. If it raises, uvicorn's own
+    handling is version-dependent and, under `--workers`, the traceback
+    is produced in a child process whose stderr a platform may or may not
+    surface. The observable result on a hosted platform can be a
+    container that simply stops with nothing in the log — which is
+    indistinguishable, from the outside, from a container that was never
+    started.
+
+    So this never relies on somebody else printing the exception. It
+    announces entry before anything can fail, reports any failure through
+    two independent channels, and re-raises so the deploy still fails.
     """
+    _announce(name)
     configure_logging()
-    return build_service(name)
+    try:
+        return build_service(name)
+    except BaseException as failure:  # noqa: BLE001 - logged, then re-raised
+        _report_startup_failure(name, failure)
+        raise
 
 
 def terminal_app() -> Any:
