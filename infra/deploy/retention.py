@@ -75,6 +75,7 @@ still answerable from the row rather than only from the audit trail.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -88,6 +89,7 @@ from infra.db.schema.users import (
     registration_attempts,
     sessions,
 )
+from infra.deploy.cli import refuse_arguments
 from infra.observability.logging import configure_logging, get_logger
 
 __all__ = [
@@ -353,8 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     was asked to, and failing it would turn a capacity signal into a
     deploy-shaped alarm that nothing can act on at 3am anyway.
     """
+    refuse_arguments("infra.deploy.retention", argv)
     configure_logging()
-    _ = argv
     try:
         engine = create_db_engine(pool_pre_ping=True, pool_size=2, max_overflow=0)
         run_retention(engine)
@@ -409,4 +411,4 @@ def _growth(
 
 
 if __name__ == "__main__":  # pragma: no cover - the cron entrypoint
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

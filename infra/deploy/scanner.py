@@ -66,6 +66,7 @@ a hazard this project has now found four times.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -83,6 +84,7 @@ from core.scoring.config import publish_scoring_configuration
 from core.scoring.engine import Lineage
 from infra.db.connection import create_db_engine
 from infra.db.schema.identity import universe_version
+from infra.deploy.cli import refuse_arguments
 from infra.deploy.config import DeploymentProfile, profile_for
 from infra.observability.logging import configure_logging, get_logger
 
@@ -278,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     `DATA_NOT_READY` one, and collapsing it here would throw it away at
     the last step.
     """
+    refuse_arguments("infra.deploy.scanner", argv)
     configure_logging()
     profile = profile_for()
 
@@ -291,7 +294,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    _ = argv
     return 0 if report.healthy else 1
 
 
@@ -342,4 +344,4 @@ def _snapshot_instant(moment: datetime) -> datetime:
 
 
 if __name__ == "__main__":  # pragma: no cover - the container's entrypoint
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

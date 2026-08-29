@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
 from infra.db.connection import create_db_engine
+from infra.deploy.cli import refuse_arguments
 from infra.observability.logging import configure_logging, get_logger
 
 __all__ = [
@@ -264,8 +266,8 @@ def upgrade_to_head(
 
 def main(argv: list[str] | None = None) -> int:
     """The pre-deploy entrypoint. Non-zero abandons the deploy."""
+    refuse_arguments("infra.deploy.migrate", argv)
     configure_logging()
-    _ = argv
     try:
         upgrade_to_head()
     except BackwardsIncompatibleMigration as refused:
@@ -325,4 +327,4 @@ def _function_body(source: str, function: str) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - the pre-deploy entrypoint
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
