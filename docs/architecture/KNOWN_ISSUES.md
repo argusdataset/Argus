@@ -430,6 +430,35 @@ are **diagnostic and disposable**; anything that must outlive the platform's
 window is written to `audit_log`. Sessions are pruned 30 days past expiry by a
 daily cron. The three guarded tables are measured rather than pruned (C8).
 
+### E4. `RAILWAY_PRIVATE_NETWORK` missing Railway's actual edge range — **RESOLVED**
+
+Found live, not by review: the first `public_stats` deploy with
+`ARGUS_ENV=production` produced `ERR_TOO_MANY_REDIRECTS` in the browser for
+every page load. `identity` never showed this, only because it had not yet
+been switched to `ARGUS_ENV=production` at the time it was checked — it was
+carrying the same latent bug.
+
+Root cause, confirmed from a real deploy log rather than documentation: a
+Railway healthcheck request arrived from peer `100.64.0.2` — inside
+`100.64.0.0/10` (RFC 6598, carrier-grade NAT), a range `RAILWAY_PRIVATE_NETWORK`
+(`infra/deploy/config.py`) did not include. `tls.py`'s `request_scheme` trusts
+`X-Forwarded-Proto` only from a peer in that list; with the edge's own address
+untrusted, every request fell back to the ASGI scope's own scheme — always
+`http`, since TLS is terminated before the container — and with
+`require_https=True` in production, `TlsPolicyMiddleware` issued a `308` to
+`https://` on every request. The browser had already used `https://`, so the
+container saw the "same" insecure request again and redirected again,
+indefinitely.
+
+Fixed by adding `100.64.0.0/10` to `RAILWAY_PRIVATE_NETWORK`. All 194
+`tests/unit/deploy/` tests pass unchanged — none had asserted the constant's
+literal value, only that the profile carries whatever the constant holds.
+Any production or staging service still running with the old default, or
+with `ARGUS_TRUSTED_PROXIES` set explicitly to the old three ranges, needs
+`100.64.0.0/10` added to that environment variable before this fix takes
+effect for it — the code default does not retroactively change a value a
+deployment overrode.
+
 ---
 
 ## F. Minor / cosmetic

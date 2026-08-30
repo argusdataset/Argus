@@ -170,9 +170,27 @@ class DeploymentProfile:
 #: proxy, which is why trusting the private range is sound here and would
 #: not be on a host with direct public ingress.
 #:
+#: `100.64.0.0/10` (RFC 6598, carrier-grade NAT) is the range Railway's
+#: edge/healthcheck prober actually connects from — confirmed from a live
+#: deploy's own access log (`100.64.0.2:44971 - "GET /health/live ..."`),
+#: not from documentation. Without it, `request_scheme` in `tls.py` never
+#: trusts the peer, `X-Forwarded-Proto` is never read, the ASGI scope's
+#: own scheme (`http`, since TLS is terminated before the container) is
+#: used instead, and a production deployment with `require_https=True`
+#: redirects every plaintext-looking request to `https://` — which the
+#: browser already used, so the container sees the same "insecure"
+#: request again and redirects again: `ERR_TOO_MANY_REDIRECTS`, forever.
+#: `10.0.0.0/8` and `172.16.0.0/12` are kept for private networking
+#: between services; `100.64.0.0/10` is what the edge itself uses.
+#:
 #: Stated as a precondition rather than assumed: if a deployment exposes
 #: the container port directly, this value is wrong and must be narrowed.
-RAILWAY_PRIVATE_NETWORK: tuple[str, ...] = ("10.0.0.0/8", "fd00::/8", "172.16.0.0/12")
+RAILWAY_PRIVATE_NETWORK: tuple[str, ...] = (
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "172.16.0.0/12",
+    "fd00::/8",
+)
 
 PROFILES: dict[Environment, DeploymentProfile] = {
     Environment.DEVELOPMENT: DeploymentProfile(
