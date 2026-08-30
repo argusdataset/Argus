@@ -112,11 +112,39 @@ class ScoreBlock(BaseModel):
     computed_at: datetime | None = None
 
 
+class PhaseTransition(BaseModel):
+    """One recorded state change, from Module 10's append-only log.
+
+    Not a computation — every field is read straight off
+    `market_state_transitions`, which is the authority; nothing here
+    re-derives or interprets it. `duration_in_prior_state_seconds` is
+    `None` only for a security's first-ever recorded transition, the same
+    case Module 10's own `duration_in_prior_state` leaves `NULL`.
+    """
+
+    from_state: str | None = None
+    to_state: str
+    transition_time: datetime
+    duration_in_prior_state_seconds: float | None = None
+    confidence: float | None = None
+
+
 class IntelligenceEntry(BaseModel):
     """One security on a derived watchlist.
 
     Carries `security_id` alongside the ticker for the reason every ARGUS
     response does: tickers are recycled, identity is not.
+
+    `phase_history` and `mfe` are populated only on the `UPTREND`
+    (confirmed moves) watchlist — the one list where showing lineage is
+    the point. On the other three they are `None`, not `[]`: an empty list
+    would claim "no history exists", where `None` correctly says "this
+    list does not show it". `mfe` is `None` whenever the security's setup
+    has not yet concluded, which is the common case for a security still
+    actively in `UPTREND` — Module 15 only measures a maximum favourable
+    excursion once a setup's outcome is recorded, and this entry reports
+    that absence rather than computing a live figure nothing upstream has
+    validated.
     """
 
     security_id: UUID
@@ -128,10 +156,12 @@ class IntelligenceEntry(BaseModel):
     entered_at: datetime
     state_confidence: float | None = None
     score: ScoreBlock
+    phase_history: list[PhaseTransition] | None = None
+    mfe: float | None = None
 
 
 class IntelligenceWatchlist(BaseModel):
-    """One of the three derived watchlists, as it is right now.
+    """One of the four derived watchlists, as it is right now.
 
     `stored: false` is on the wire on purpose. This list is a query over
     `market_state`, not a table — a client caching it should know it is
@@ -208,7 +238,7 @@ class StateBlock(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     watchlists: list[str] = Field(
         default_factory=list,
-        description="Which of the three derived lists this state puts the security on.",
+        description="Which of the four derived lists this state puts the security on.",
     )
 
 

@@ -213,7 +213,7 @@ def test_thin_evidence_and_a_state_machine_gap_are_different_reasons():
 # --------------------------------------------------------------------------
 
 
-def test_the_three_watchlists_are_disjoint():
+def test_the_four_watchlists_are_disjoint():
     """No state appears on two lists."""
     seen: set[MarketState] = set()
     for states in WATCHLISTS.values():
@@ -221,11 +221,11 @@ def test_the_three_watchlists_are_disjoint():
         seen |= states
 
 
-def test_the_watchlists_cover_exactly_the_six_public_states():
-    """Six public states on three lists; three internal states on none."""
+def test_the_watchlists_cover_exactly_the_seven_public_states():
+    """Seven public states on four lists; two internal states on none."""
     covered = set().union(*WATCHLISTS.values())
     assert covered == set(MarketState) - INTERNAL_STATES
-    assert len(covered) == 6
+    assert len(covered) == 7
 
 
 def test_an_unknown_watchlist_name_raises_rather_than_returning_empty():

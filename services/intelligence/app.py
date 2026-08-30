@@ -13,7 +13,7 @@ body when real authentication arrives. This module depends on it rather
 than growing its own — a second identity mechanism would mean two places
 Module 22 has to find.
 
-Today nothing here is user-scoped: the three derived watchlists are the
+Today nothing here is user-scoped: the four derived watchlists are the
 same for everyone, and a security's score is a property of the security.
 `optional_user` exists so a route that needs scoping later has the seam
 already wired, and so the dependency is visible rather than being
@@ -32,7 +32,7 @@ cannot score it, because the historical-evidence component was
 unmeasurable" is not a track-record claim; it is ARGUS reporting what it
 currently holds, caveats attached. Gating it would mean a person could not
 see what the system thinks until somebody approved the thought — and the
-three watchlists have always been ungated live views of `market_state` for
+four watchlists have always been ungated live views of `market_state` for
 the same reason.
 
 The report states this reasoning in full, including where the line would
@@ -83,7 +83,7 @@ def create_app(
         version="1",
         summary="What ARGUS currently thinks about a security, and why.",
         description=(
-            "Assembles what Modules 08-16 produced: the three derived watchlists, a "
+            "Assembles what Modules 08-16 produced: the four derived watchlists, a "
             "security's score breakdown, its historical analogues, its risk inputs, and "
             "the explanation behind all of it. Computes nothing — every figure here was "
             "written by an earlier module and is served with its provenance and its "
@@ -160,7 +160,7 @@ LimitDep = Annotated[int | None, Query(ge=1, description="Maximum entries to ret
 
 
 # --------------------------------------------------------------------------
-# The three derived watchlists
+# The four derived watchlists
 # --------------------------------------------------------------------------
 
 
@@ -169,7 +169,7 @@ def _watchlist_router() -> APIRouter:
 
     @router.get("", response_model=list[str])
     def index() -> list[str]:
-        """The three names ARGUS derives. The set is closed by Module 10."""
+        """The four names ARGUS derives. The set is closed by Module 10."""
         return list(WATCHLIST_NAMES)
 
     @router.get("/{name}", response_model=IntelligenceWatchlist)

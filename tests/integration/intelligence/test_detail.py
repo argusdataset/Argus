@@ -323,13 +323,23 @@ def test_the_state_block_names_the_lists_that_state_puts_it_on(client, register,
 
 
 def test_a_state_on_no_list_reports_an_empty_watchlist_membership(client, register, set_state):
-    """UPTREND is a state ARGUS holds and a list it is on none of."""
-    set_state(register("OFFLIST"), MarketState.UPTREND)
+    """DISTRIBUTION is a state ARGUS holds and a list it is on none of."""
+    set_state(register("OFFLIST"), MarketState.DISTRIBUTION)
 
     block = client.get("/intelligence/securities/OFFLIST").json()["state"]
 
-    assert block["state"] == "UPTREND"
+    assert block["state"] == "DISTRIBUTION"
     assert block["watchlists"] == []
+
+
+def test_the_uptrend_state_names_the_confirmed_moves_watchlist(client, register, set_state):
+    """UPTREND is the fourth watchlist, not an internal state on no list."""
+    set_state(register("CONFIRMEDUP"), MarketState.UPTREND)
+
+    block = client.get("/intelligence/securities/CONFIRMEDUP").json()["state"]
+
+    assert block["state"] == "UPTREND"
+    assert block["watchlists"] == ["UPTREND"]
 
 
 def test_no_detail_response_carries_a_fundamentals_field(client, register, set_state, score):

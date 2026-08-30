@@ -32,7 +32,7 @@ SETUP_NOT_FOUND = "SETUP_NOT_FOUND"
 #: A setup asked "why did this fail" before it finished. Not a 404: the
 #: setup exists and is fine, it simply has no outcome yet.
 NOT_CONCLUDED = "NOT_CONCLUDED"
-#: Not one of the three. The set is closed by Module 10.
+#: Not one of the four. The set is closed by Module 10.
 UNKNOWN_WATCHLIST = "UNKNOWN_WATCHLIST"
 
 

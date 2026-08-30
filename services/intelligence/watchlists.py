@@ -1,8 +1,8 @@
-"""The three derived watchlists. Live queries, never a stored table.
+"""The four derived watchlists. Live queries, never a stored table.
 
 ## Source of truth, enforced by not having a second one
 
-DOWN TREND, CONSOLIDATION and BREAKOUT READY are filters over
+DOWN TREND, CONSOLIDATION, BREAKOUT READY and UPTREND are filters over
 `market_state` and nothing else. Module 10 built `watchlist()` for exactly
 this and stated the reason: a stored watchlist table would be a second
 place a security's membership could be recorded, and the moment the two
@@ -21,12 +21,38 @@ is nothing to refresh.
 
 `UNCLASSIFIED` appears on no list, and that is the point of the state
 existing. A security Module 09 found ineligible is classified
-`UNCLASSIFIED` by Module 10, so it is absent from all three lists without
+`UNCLASSIFIED` by Module 10, so it is absent from all four lists without
 this module filtering anything — which is stronger than filtering,
 because a filter can be forgotten and an absent state cannot be.
 
-`UPTREND` and `DISTRIBUTION` are likewise on no list. They are internal
-states: one already broke out, one is showing topping characteristics.
+`DISTRIBUTION` is likewise on no list. It is an internal state — a
+security showing topping characteristics — that informs transition logic
+and same-asset history without being surfaced as a public list of its own.
+
+## UPTREND: the one watchlist that shows lineage
+
+The other three answer "what is ARGUS watching right now". `UPTREND`
+answers a different question: "what did ARGUS call correctly, that is now
+visibly moving". A security lands here only after confirming a breakout
+ARGUS flagged earlier in its own DOWN_TREND, CONSOLIDATION and
+BREAKOUT_READY history — so this is the one list where that history is
+attached to each entry (`phase_history`), read from Module 10's
+already-existing append-only transition log via
+`services.intelligence.reads.transitions_for`. Nothing is computed here:
+every transition was recorded when it happened.
+
+`mfe` travels alongside it, read from Module 15's `setup_outcomes` when
+the linked setup has concluded. A security still actively in `UPTREND`
+typically has no concluded outcome yet, and this module reports that
+honestly as `None` rather than computing a live, unvalidated figure — the
+same "absence over invention" discipline every other public number in
+ARGUS follows.
+
+Like the other three, this is a live view: a security that reverses back
+toward `DOWN_TREND` leaves it on the next request, the same as it would
+leave any other watchlist. Its full history stays queryable through
+Module 10's transition log regardless, and its full CASE record through
+Module 15's once the setup concludes.
 
 ## Score numbers, never fundamentals
 
@@ -46,12 +72,17 @@ from sqlalchemy.engine import Connection
 
 from core.market_state.watchlists import WATCHLIST_NAMES, states_for, watchlist
 from infra.db.schema.identity import security_identity, security_ticker_history
+from infra.db.schema.setups import setup_outcomes, setups
 from services.intelligence.blocks import build_freshness, build_score
 from services.intelligence.errors import UNKNOWN_WATCHLIST, IntelligenceError
-from services.intelligence.reads import latest_signal, state_row
-from services.intelligence.schemas import IntelligenceEntry, IntelligenceWatchlist
+from services.intelligence.reads import latest_signal, state_row, transitions_for
+from services.intelligence.schemas import IntelligenceEntry, IntelligenceWatchlist, PhaseTransition
 
-__all__ = ["WATCHLIST_NAMES", "read_watchlist"]
+__all__ = ["CONFIRMED_MOVES_WATCHLIST", "WATCHLIST_NAMES", "read_watchlist"]
+
+#: The one watchlist that carries phase history and MFE on each entry.
+#: See the module docstring.
+CONFIRMED_MOVES_WATCHLIST = "UPTREND"
 
 
 def read_watchlist(
@@ -71,7 +102,7 @@ def read_watchlist(
     if name not in WATCHLIST_NAMES:
         raise IntelligenceError(
             UNKNOWN_WATCHLIST,
-            f"No watchlist named {name!r}. ARGUS derives exactly three: "
+            f"No watchlist named {name!r}. ARGUS derives exactly four: "
             f"{', '.join(WATCHLIST_NAMES)}.",
             status=404,
             detail={"watchlist": name, "available": list(WATCHLIST_NAMES)},
@@ -82,6 +113,7 @@ def read_watchlist(
     members = watchlist(connection, name)
     shown = members if limit is None else members[:limit]
 
+    include_lineage = name == CONFIRMED_MOVES_WATCHLIST
     tickers = _tickers(connection, shown, as_of=as_of)
     entries: list[IntelligenceEntry] = []
     for security_id in shown:
@@ -100,6 +132,10 @@ def read_watchlist(
                     float(state.confidence) if state.confidence is not None else None
                 ),
                 score=build_score(latest_signal(connection, security_id)),
+                phase_history=(
+                    _phase_history(connection, security_id) if include_lineage else None
+                ),
+                mfe=_current_mfe(connection, security_id) if include_lineage else None,
             )
         )
 
@@ -153,3 +189,51 @@ def _tickers(
     for row in rows:
         resolved.setdefault(row.id, (row.ticker, row.name))
     return resolved
+
+
+def _phase_history(connection: Connection, security_id: UUID) -> list[PhaseTransition]:
+    """Every recorded state change for one security, oldest first.
+
+    Reuses `transitions_for` — already built for `overlays.py`'s chart
+    marks, reading the same `market_state_transitions` log this function
+    would otherwise reimplement. Nothing computed: each field is the value
+    Module 10 wrote when the transition happened.
+    """
+    return [
+        PhaseTransition(
+            from_state=str(row.from_state) if row.from_state else None,
+            to_state=str(row.to_state),
+            transition_time=row.transition_time,
+            duration_in_prior_state_seconds=(
+                row.duration_in_prior_state.total_seconds()
+                if row.duration_in_prior_state is not None
+                else None
+            ),
+            confidence=float(row.confidence) if row.confidence is not None else None,
+        )
+        for row in transitions_for(connection, security_id)
+    ]
+
+
+def _current_mfe(connection: Connection, security_id: UUID) -> float | None:
+    """The maximum favourable excursion of this security's most recent setup.
+
+    `None` whenever that setup has not concluded — which is the normal
+    case for a security still actively sitting in `UPTREND`. Module 15
+    only measures MFE once an outcome is recorded (`record_outcome` in
+    `core/outcome_tracking/engine.py`); there is no live, on-demand
+    excursion computation anywhere in ARGUS, and this function does not
+    add one. Inventing a number here would mean this read-only module
+    computing something for the first time, which is exactly the
+    boundary Module 21's own tests hold it to.
+    """
+    row = connection.execute(
+        select(setup_outcomes.c.mfe)
+        .select_from(setups.outerjoin(setup_outcomes, setup_outcomes.c.setup_id == setups.c.id))
+        .where(setups.c.security_id == security_id)
+        .order_by(desc(setups.c.detected_at))
+        .limit(1)
+    ).one_or_none()
+    if row is None or row.mfe is None:
+        return None
+    return float(row.mfe)

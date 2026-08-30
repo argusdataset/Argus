@@ -273,11 +273,11 @@ def build_state(row: Any | None) -> StateBlock | None:
 
 
 def watchlists_for_state(state: str) -> list[str]:
-    """Which of the three lists a state appears on. Module 10 owns the map.
+    """Which of the four lists a state appears on. Module 10 owns the map.
 
     Read from `WATCHLISTS` rather than restated, so a state added to a
     list in Module 10 appears here with no change — and a state on no list
-    (UPTREND, DISTRIBUTION, UNCLASSIFIED) correctly returns nothing.
+    (DISTRIBUTION, UNCLASSIFIED) correctly returns nothing.
     """
     return sorted(
         name

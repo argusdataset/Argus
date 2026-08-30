@@ -8,7 +8,7 @@ and stored, and every absence it reports was an earlier module's refusal.
 
 | File | What it owns |
 |---|---|
-| `watchlists.py` | The three derived lists. A live query over `market_state`, never a table |
+| `watchlists.py` | The four derived lists. A live query over `market_state`, never a table |
 | `detail.py` | Per-security assembly: state, score, similarity, risk, explanation |
 | `overlays.py` | The chart layer Module 19 left out. Serves no price data |
 | `cases.py` | "Why did this fail" — Module 15's record, Module 16's words |
@@ -22,7 +22,7 @@ and stored, and every absence it reports was an earlier module's refusal.
 ## Endpoints
 
 ```
-GET /intelligence/watchlists                        the three names
+GET /intelligence/watchlists                        the four names
 GET /intelligence/watchlists/{name}                 one derived list, live
 GET /intelligence/securities/{ticker}               everything ARGUS holds
 GET /intelligence/securities/{ticker}/overlays      marks and zones. No bars

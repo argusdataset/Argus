@@ -5,11 +5,12 @@ logic is wired at all (ARGUS is not selling anything yet, by design; the
 plan is to accumulate an honest multi-year track record first).
 
 **On watchlists:** `user_watchlists` here are user-created, named and
-manually edited. They are NOT the three ARGUS Intelligence watchlists
-(DOWN TREND / CONSOLIDATION / BREAKOUT READY) — those are derived views
-over `market_state` and are deliberately never stored as their own table,
-because storing them would create a second source of truth that could
-drift from the state engine. The two concepts must never be merged.
+manually edited. They are NOT the four ARGUS Intelligence watchlists
+(DOWN TREND / CONSOLIDATION / BREAKOUT READY / UPTREND) — those are
+derived views over `market_state` and are deliberately never stored as
+their own table, because storing them would create a second source of
+truth that could drift from the state engine. The two concepts must never
+be merged.
 
 `audit_log` is append-only: an audit trail that can be edited is not an
 audit trail.

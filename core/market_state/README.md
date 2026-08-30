@@ -2,7 +2,7 @@
 
 Market State Engine — built in Module 10. Assigns one of nine
 `market_state` values per security per `as_of`, records every transition
-append-only, and derives the three official watchlists.
+append-only, and derives the four official watchlists.
 
 ```python
 from core.market_state import (
@@ -24,7 +24,7 @@ result = classify_states(
 )
 record_transitions(connection, result)
 
-lists = all_watchlists(connection)  # DOWN_TREND / CONSOLIDATION / BREAKOUT_READY
+lists = all_watchlists(connection)  # DOWN_TREND / CONSOLIDATION / BREAKOUT_READY / UPTREND
 ```
 
 ## Read this first: what is solid and what is a guess
@@ -97,17 +97,25 @@ that must not be conflated:
   separately is the only way such a gap is ever visible. One was found
   this way during development (see below).
 
-## The three watchlists
+## The four watchlists
 
 ```
 DOWN TREND      = state IN (DOWN_TREND, BASE_FORMING)
 CONSOLIDATION   = state IN (CONSOLIDATION, ACCUMULATION)
 BREAKOUT READY  = state IN (BREAKOUT_WATCH, BREAKOUT_READY)
+UPTREND         = state IN (UPTREND)
 ```
 
-Queries over `market_state`, never stored. `UPTREND`, `DISTRIBUTION` and
-`UNCLASSIFIED` appear on none of them. The three are disjoint and cover
-exactly the six public states — both asserted.
+Queries over `market_state`, never stored. `DISTRIBUTION` and
+`UNCLASSIFIED` appear on none of them. The four are disjoint and cover
+exactly the seven public states — both asserted.
+
+`UPTREND` is the newest of the four: a security whose breakout confirmed
+used to leave every watchlist, hiding ARGUS's clearest evidence of working
+correctly — a candidate it called before the move, now visibly moving. It
+is a live view like the other three, not a permanent record: a security
+that reverses back out leaves this list too, and its full history stays
+queryable through `market_state_transitions` regardless.
 
 ## Transitions
 
@@ -156,7 +164,7 @@ The shared Module 08 lifecycle fixture, classified at each phase end:
 | stabilization | `CONSOLIDATION` | CONSOLIDATION | 0.38 |
 | consolidation | `ACCUMULATION` | CONSOLIDATION | 0.43 |
 | awakening | `BREAKOUT_WATCH` | BREAKOUT READY | 0.45 |
-| confirmation | `UPTREND` | — | — |
+| confirmation | `UPTREND` | UPTREND | — |
 
 Monotone forward progression through the cycle. `BASE_FORMING` is skipped
 — by the stabilization phase the synthetic security is already quiet

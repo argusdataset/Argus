@@ -141,7 +141,7 @@ def test_the_awakening_appears_on_the_breakout_ready_watchlist(sequence):
 
 
 def test_a_security_appears_on_at_most_one_watchlist(sequence):
-    """The three lists partition six of the nine states, disjointly.
+    """The four lists partition seven of the nine states, disjointly.
 
     Overlap would make "how many securities are consolidating" ambiguous
     and would let one security be counted twice in any summary.
@@ -151,24 +151,41 @@ def test_a_security_appears_on_at_most_one_watchlist(sequence):
         result = classify_states(vectors[phase])
         memberships = [
             name
-            for name in ("DOWN_TREND", "CONSOLIDATION", "BREAKOUT_READY")
+            for name in ("DOWN_TREND", "CONSOLIDATION", "BREAKOUT_READY", "UPTREND")
             if LIFECYCLE_ID in result.watchlist(name)
         ]
         assert len(memberships) <= 1, f"{phase} appears on {memberships}"
 
 
-def test_the_uptrend_appears_on_no_public_watchlist(sequence):
-    """UPTREND and DISTRIBUTION are internal states.
+def test_the_uptrend_appears_on_its_own_confirmed_moves_watchlist(sequence):
+    """UPTREND is the fourth watchlist, not an internal state.
 
-    A security that already broke out informs transition history without
-    being surfaced as its own list — the brief is explicit that only three
-    watchlists are public.
+    A security that already broke out is exactly the evidence ARGUS most
+    wants to show — a candidate it called correctly, now visibly moving —
+    so it is surfaced on its own list rather than disappearing from every
+    watchlist the moment it confirms.
     """
     vectors = phase_vectors()
     result = classify_states(vectors["confirmation"])
     assert sequence["confirmation"] is MarketState.UPTREND
+    assert LIFECYCLE_ID in result.watchlist("UPTREND")
     for name in ("DOWN_TREND", "CONSOLIDATION", "BREAKOUT_READY"):
         assert LIFECYCLE_ID not in result.watchlist(name)
+
+
+def test_a_reversal_out_of_uptrend_leaves_the_confirmed_moves_watchlist(sequence):
+    """A genuine reversal back toward DOWN_TREND removes it from UPTREND.
+
+    This is a live, derived view like the other three — not a permanent
+    hall of fame. The security's full history stays queryable through
+    Module 10's transition log regardless of current membership.
+    """
+    vectors = phase_vectors()
+    confirmed = classify_states(vectors["confirmation"])
+    assert LIFECYCLE_ID in confirmed.watchlist("UPTREND")
+
+    reversed_result = classify_states(vectors["decline"])
+    assert LIFECYCLE_ID not in reversed_result.watchlist("UPTREND")
 
 
 # --------------------------------------------------------------------------

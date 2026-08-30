@@ -392,6 +392,7 @@ def test_the_watchlists_are_queries_over_market_state(
     consolidating = register("WLCONS")
     ready = register("WLREADY")
     broken_out = register("WLUP")
+    topping = register("WLDIST")
 
     record_transitions(
         connection,
@@ -403,6 +404,7 @@ def test_the_watchlists_are_queries_over_market_state(
                 consolidating: MarketState.ACCUMULATION,
                 ready: MarketState.BREAKOUT_WATCH,
                 broken_out: MarketState.UPTREND,
+                topping: MarketState.DISTRIBUTION,
             },
         ),
     )
@@ -411,8 +413,10 @@ def test_the_watchlists_are_queries_over_market_state(
     assert down in lists["DOWN_TREND"]
     assert consolidating in lists["CONSOLIDATION"]
     assert ready in lists["BREAKOUT_READY"]
-    # UPTREND is internal — it appears on none of the three.
-    assert not any(broken_out in members for members in lists.values())
+    # UPTREND is the fourth watchlist, a confirmed move ARGUS wants shown.
+    assert broken_out in lists["UPTREND"]
+    # DISTRIBUTION is internal — it appears on none of the four.
+    assert not any(topping in members for members in lists.values())
 
 
 def test_an_unclassified_security_appears_on_no_watchlist(

@@ -43,21 +43,29 @@ import pandas as pd
 from core.market_state.thresholds import StateThresholds
 from infra.db.enums import MarketState
 
-#: The three official watchlists, as a mapping to the states they cover.
+#: The four official watchlists, as a mapping to the states they cover.
 #:
 #: Derived views over `market_state`, never stored tables — the
-#: Source-of-Truth principle. `UPTREND` and `DISTRIBUTION` map to no
-#: public list: they are internal states that inform transition logic and
-#: same-asset history without being surfaced as their own watchlist.
+#: Source-of-Truth principle. `DISTRIBUTION` maps to no public list: it is
+#: an internal state (a qualification of having been in an uptrend, not a
+#: stage beyond it) that informs transition logic and same-asset history
+#: without being surfaced as its own watchlist.
+#:
+#: `UPTREND` was internal too, until a gap was identified: once a
+#: candidate's breakout confirms, it left every watchlist — even though a
+#: confirmed move is exactly the evidence ARGUS most wants to show, a
+#: candidate it called correctly, now visibly moving. `UPTREND` is a peer
+#: to the original three, not a special case of one of them.
 WATCHLISTS: dict[str, frozenset[MarketState]] = {
     "DOWN_TREND": frozenset({MarketState.DOWN_TREND, MarketState.BASE_FORMING}),
     "CONSOLIDATION": frozenset({MarketState.CONSOLIDATION, MarketState.ACCUMULATION}),
     "BREAKOUT_READY": frozenset({MarketState.BREAKOUT_WATCH, MarketState.BREAKOUT_READY}),
+    "UPTREND": frozenset({MarketState.UPTREND}),
 }
 
 #: States that appear on no public watchlist.
 INTERNAL_STATES: frozenset[MarketState] = frozenset(
-    {MarketState.UNCLASSIFIED, MarketState.UPTREND, MarketState.DISTRIBUTION}
+    {MarketState.UNCLASSIFIED, MarketState.DISTRIBUTION}
 )
 
 

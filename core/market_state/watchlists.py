@@ -1,9 +1,10 @@
-"""The three official watchlists, as queries over `market_state`.
+"""The four official watchlists, as queries over `market_state`.
 
 ```
 DOWN TREND      = state IN (DOWN_TREND, BASE_FORMING)
 CONSOLIDATION   = state IN (CONSOLIDATION, ACCUMULATION)
 BREAKOUT READY  = state IN (BREAKOUT_WATCH, BREAKOUT_READY)
+UPTREND         = state IN (UPTREND)
 ```
 
 **Never stored.** Per the Source-of-Truth principle, a watchlist is a
@@ -13,10 +14,20 @@ and the moment the two disagreed there would be no way to say which was
 right — the same reasoning that makes `market_state` a projection of
 `market_state_transitions` rather than an independent record.
 
-`UPTREND` and `DISTRIBUTION` appear on no list. They are internal states:
-a security that already broke out, or one showing topping characteristics.
-Both inform transition logic and same-asset history without being
-surfaced as a public list of their own.
+`DISTRIBUTION` appears on no list. It is an internal state — a
+qualification of having been in an uptrend, not a stage beyond it — that
+informs transition logic and same-asset history without being surfaced as
+a public list of its own.
+
+`UPTREND` was internal for the same reason, until a gap was identified: a
+security whose breakout confirmed left every watchlist, hiding exactly the
+evidence ARGUS most wants to show — a candidate it called correctly,
+now visibly moving. `UPTREND (confirmed moves)` is the fourth watchlist,
+a peer to the original three rather than a special view of one of them. A
+security that reverses back out of `UPTREND` leaves this list the same way
+it would leave any other — it is a live, derived view, not a permanent
+record of the confirmation. The permanent record lives in Module 15's CASE
+data, once the setup concludes.
 
 `UNCLASSIFIED` appears on no list either, which is the point of having it.
 A security Module 09 found ineligible, or one with too little history,
@@ -36,7 +47,7 @@ from infra.db.enums import MarketState
 from infra.db.schema.intelligence import market_state
 
 #: The public names, in the order a UI would show them.
-WATCHLIST_NAMES: tuple[str, ...] = ("DOWN_TREND", "CONSOLIDATION", "BREAKOUT_READY")
+WATCHLIST_NAMES: tuple[str, ...] = ("DOWN_TREND", "CONSOLIDATION", "BREAKOUT_READY", "UPTREND")
 
 
 def states_for(name: str) -> frozenset[MarketState]:
