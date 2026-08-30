@@ -1,4 +1,5 @@
-"""The four charts, computed from a dataset. Pure — no connection, no gate.
+"""Four distribution charts plus one curated highlight, from a dataset.
+Pure — no connection, no gate.
 
 ## Why this file cannot reach the database
 
@@ -10,14 +11,17 @@ intent rather than of structure.
 
 So every function here is `frame in, payload out`. A structural test
 asserts no module in this service except `gate.py` imports a loader or
-names the outcome tables.
+names the outcome tables. `top_performers` — the fifth builder in this
+file — holds that same shape: it is a filter and a sort over the frame
+the gate already produced, nothing more.
 
 ## Four charts, not one number
 
 Stated as a hard requirement early in the project: results are shown
 across several distinct chart types, never a single aggregate. One number
 is the shape a marketing page takes; four charts is the shape a claim
-takes when it expects to be checked.
+takes when it expects to be checked. This remains the complete statistical
+claim — nothing below changes it.
 
 - **Win rate** — the full outcome distribution, including EXPIRED and
   INVALIDATED, not just success over failure.
@@ -25,6 +29,21 @@ takes when it expects to be checked.
   lucky stretch is visible as one lucky stretch.
 - **Regime breakdown** — where it worked and where it did not.
 - **MFE/MAE distribution** — the shape of the excursions, not their mean.
+
+## A fifth output, and why it is not a fifth chart
+
+`top_performers` is additive, not a fifth distribution: it shows the
+best-performing slice of the *same* SUCCESS-classified outcomes the win
+rate chart already counts, filtered to realized return of 50% or more —
+never redefining what SUCCESS means, only narrowing an already-successful
+set further for display. It is labelled as a curated subset on every
+response (`summary.kind == "curated_subset"`, and the caption says so in
+plain language), it goes through the identical gate — built inside the
+same `refresh_public_stats` call, from the same approved dataset, stored
+in the same snapshot table — and it carries no security identity: a
+return figure, not a stock pick. The four distribution charts remain the
+primary, unfiltered content; this is a highlight reel that cannot be
+requested, cached, or served independently of them.
 
 ## Numbers come from Module 17, not from here
 
@@ -60,6 +79,7 @@ from core.model_validation_evaluation.evaluation.config import (
     EvaluationThresholds,
 )
 from core.model_validation_evaluation.evaluation.metrics import MetricSuite, compute_metrics
+from infra.db.enums import OutcomeStatus
 from services.public_stats.config import PublicStatsConfig
 
 __all__ = [
@@ -67,11 +87,14 @@ __all__ = [
     "CHART_CUMULATIVE",
     "CHART_EXCURSIONS",
     "CHART_REGIME",
+    "CHART_TOP_PERFORMERS",
     "CHART_WIN_RATE",
+    "TOP_PERFORMERS_LABEL",
     "build_chart",
     "cumulative_performance",
     "excursion_distribution",
     "regime_breakdown",
+    "top_performers",
     "win_rate_breakdown",
 ]
 
@@ -79,15 +102,22 @@ CHART_WIN_RATE = "win_rate"
 CHART_CUMULATIVE = "cumulative_performance"
 CHART_REGIME = "regime_breakdown"
 CHART_EXCURSIONS = "excursion_distribution"
+CHART_TOP_PERFORMERS = "top_performers"
 
 #: The closed set. A caller naming anything else gets a 404 rather than an
 #: empty chart, because "no such chart" and "this chart is empty" are
 #: different answers and only one is the caller's mistake.
+#:
+#: `CHART_TOP_PERFORMERS` is listed last and built last (see `build_chart`
+#: below and `refresh_public_stats` in `snapshots.py`) — a display
+#: convention, not a privilege: it is computed from, published alongside,
+#: and gated identically to the four ahead of it.
 CHARTS: tuple[str, ...] = (
     CHART_WIN_RATE,
     CHART_CUMULATIVE,
     CHART_REGIME,
     CHART_EXCURSIONS,
+    CHART_TOP_PERFORMERS,
 )
 
 #: Prose attached to every insufficient bucket. Written for a reader with
@@ -97,6 +127,17 @@ _THIN = (
     "ARGUS requires {floor} outcomes before publishing a percentage, because a "
     "rate computed from a handful of cases looks exactly like one computed from "
     "thousands."
+)
+
+#: Carried on every `top_performers` response — in the caption, so it
+#: reads even where a client shows only that, and in `summary.kind`, so a
+#: client can detect it without parsing prose. The labelling requirement
+#: this whole endpoint exists to satisfy: nothing here should be
+#: mistakable for the complete picture.
+TOP_PERFORMERS_LABEL = (
+    "A curated highlight, not the complete picture — see the win-rate, "
+    "cumulative-performance and MFE/MAE charts above for the full, "
+    "unfiltered distribution, including every loss."
 )
 
 
@@ -130,6 +171,7 @@ def build_chart(
         CHART_CUMULATIVE: cumulative_performance,
         CHART_REGIME: regime_breakdown,
         CHART_EXCURSIONS: excursion_distribution,
+        CHART_TOP_PERFORMERS: top_performers,
     }
     if chart not in builders:
         raise KeyError(chart)
@@ -367,6 +409,86 @@ def excursion_distribution(
             if count
             else "No published outcomes yet."
         ),
+    )
+
+
+# --------------------------------------------------------------------------
+# 5. Top performers — a curated highlight, additive to the four above
+# --------------------------------------------------------------------------
+
+
+def top_performers(frame: pd.DataFrame, config: PublicStatsConfig | None = None) -> ChartPayload:
+    """The best-performing slice of the same SUCCESS outcomes, ranked.
+
+    Not a second success criterion. The filter is `outcome_status ==
+    SUCCESS` — Module 15/17's own, unchanged — narrowed further to
+    `realized_return >= top_performer_threshold`. Every row here already
+    passed the real bar; this only asks which of those cleared a much
+    higher one, for display.
+
+    No security identity travels with an entry — no ticker, no
+    `security_id`. Every other public figure in this module is an
+    aggregate over many outcomes; naming which company produced a
+    particular return would be the one place this page singled out an
+    individual case; the return and the excursion are shown, the security
+    behind them is not.
+
+    Sorted by realized return descending and capped at
+    `top_performer_limit`: a highlight is bounded by construction, not by
+    a client-supplied limit like the other charts' pages — an unbounded
+    "highlights" list is a second full distribution wearing a curated
+    label.
+    """
+    config = config or PublicStatsConfig()
+    threshold = float(config.settings.top_performer_threshold)
+    limit = int(config.settings.top_performer_limit)
+
+    if frame.empty:
+        return ChartPayload(
+            chart=CHART_TOP_PERFORMERS,
+            sample_size=0,
+            summary={"threshold": threshold, "kind": "curated_subset", "qualifying_count": 0},
+            caption=f"No published outcomes yet. {TOP_PERFORMERS_LABEL}",
+        )
+
+    returns = pd.to_numeric(frame["realized_return"], errors="coerce")
+    qualifies = (frame["outcome_status"] == OutcomeStatus.SUCCESS.value) & (returns >= threshold)
+    qualifying = frame.loc[qualifies].copy()
+    qualifying["realized_return"] = returns.loc[qualifies]
+    qualifying["mfe"] = pd.to_numeric(qualifying["mfe"], errors="coerce")
+    qualifying = qualifying.sort_values("realized_return", ascending=False)
+
+    qualifying_count = len(qualifying)
+    shown = qualifying.head(limit)
+
+    series = [
+        {
+            "realized_return": float(row.realized_return),
+            "mfe": float(row.mfe) if pd.notna(row.mfe) else None,
+            "concluded_at": _iso(row.concluded_at) if pd.notna(row.concluded_at) else None,
+        }
+        for row in shown.itertuples()
+    ]
+
+    caption = (
+        f"{qualifying_count} published outcome(s) reached {threshold:.0%} realized return "
+        f"or more. {TOP_PERFORMERS_LABEL}"
+        if qualifying_count
+        else f"No published outcome has yet reached {threshold:.0%} realized return. "
+        f"{TOP_PERFORMERS_LABEL}"
+    )
+
+    return ChartPayload(
+        chart=CHART_TOP_PERFORMERS,
+        sample_size=qualifying_count,
+        series=series,
+        summary={
+            "threshold": threshold,
+            "kind": "curated_subset",
+            "qualifying_count": qualifying_count,
+            "shown": len(series),
+        },
+        caption=caption,
     )
 
 

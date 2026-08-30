@@ -83,6 +83,30 @@ class PublicStatsSettings:
         )
     )
 
+    # -- Top performers (curated, additive to the four charts above) --------
+    top_performer_threshold: PublicStatsSetting = field(
+        default_factory=lambda: _s(
+            0.50,
+            CALIBRATABLE,
+            "Minimum realized return for a SUCCESS-classified outcome to appear in "
+            "the Top Performers highlight. Consequential rather than operational — "
+            "lowering it dilutes what 'top performer' means to a reader — so it is "
+            "isolated the same way min_public_sample is. It narrows an "
+            "already-SUCCESS outcome further; it does not redefine what SUCCESS "
+            "means, and it never lowers the bar Module 15/17 set.",
+        )
+    )
+    top_performer_limit: PublicStatsSetting = field(
+        default_factory=lambda: _s(
+            20.0,
+            OPERATIONAL,
+            "Maximum entries the Top Performers list returns, after sorting by "
+            "realized return descending. A display bound, like "
+            "cumulative_max_points: a highlight that returned everything qualifying "
+            "would be a second full distribution wearing a curated label.",
+        )
+    )
+
     # -- Chart shapes --------------------------------------------------------
     excursion_bins: PublicStatsSetting = field(
         default_factory=lambda: _s(

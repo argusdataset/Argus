@@ -7,7 +7,7 @@ with no login. Three options were available and the trade-offs are not
 close:
 
 - **On demand.** Every request loads every published outcome and computes
-  four aggregates. Correct, trivially fresh, and the wrong shape: the
+  every chart. Correct, trivially fresh, and the wrong shape: the
   work scales with published history and is repeated identically for
   every visitor.
 - **Postgres materialized views.** Cheap reads, but the gate is not
@@ -128,8 +128,8 @@ def refresh_public_stats(
 ) -> dict[str, int]:
     """Recompute and store every chart. The only writer in this module.
 
-    Loads the published dataset once and builds all four charts from it,
-    rather than once per chart: the load is the expensive half, the four
+    Loads the published dataset once and builds every chart from it,
+    rather than once per chart: the load is the expensive half, the
     aggregates are cheap over an in-memory frame, and computing them from
     one dataset makes it impossible for two charts on the same page to
     disagree about how many outcomes exist.

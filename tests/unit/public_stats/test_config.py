@@ -24,9 +24,20 @@ def test_every_setting_declares_a_kind_and_a_rationale():
         assert entry["rationale"].strip(), f"{name} has no stated reasoning"
 
 
-def test_the_public_floor_is_the_only_calibratable_number():
-    """Everything else bounds how a chart is drawn, never what it says."""
-    assert set(PublicStatsSettings().calibratable()) == {"min_public_sample"}
+def test_the_calibratable_numbers_are_exactly_the_ones_that_change_the_claim():
+    """Everything else bounds how a chart is drawn, never what it says.
+
+    `min_public_sample` decides how much evidence ARGUS demands before
+    showing a rate at all. `top_performer_threshold` decides what counts
+    as "top" in the one section built to highlight a subset — lowering it
+    would dilute that label the same way loosening the public floor would
+    dilute a rate. Both are consequential; the display bounds elsewhere
+    (bin counts, point limits, list limits) are not.
+    """
+    assert set(PublicStatsSettings().calibratable()) == {
+        "min_public_sample",
+        "top_performer_threshold",
+    }
 
 
 def test_the_public_floor_is_never_looser_than_the_internal_one():
@@ -50,6 +61,14 @@ def test_the_public_floor_is_admitted_to_be_invented():
 
     assert entry["kind"] == CALIBRATABLE
     assert "stranger" in entry["rationale"]
+
+
+def test_the_top_performer_threshold_narrows_success_rather_than_redefining_it():
+    entry = PublicStatsSettings().describe()["top_performer_threshold"]
+
+    assert entry["kind"] == CALIBRATABLE
+    assert "SUCCESS" in entry["rationale"]
+    assert entry["value"] == pytest.approx(0.50)
 
 
 def test_changing_the_floor_changes_the_configuration_checksum():

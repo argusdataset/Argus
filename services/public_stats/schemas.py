@@ -70,10 +70,10 @@ class StatsProvenance(Provenance):
 class ChartResponse(BaseModel):
     """One chart, ready to plot, with everything needed to judge it.
 
-    `series` and `summary` are deliberately loosely typed: each of the
-    four charts has a different row shape, and forcing them into one model
-    would either lose information or produce a union nobody can read. The
-    shapes are stable and documented per chart in `aggregates.py`.
+    `series` and `summary` are deliberately loosely typed: each chart has
+    a different row shape, and forcing them into one model would either
+    lose information or produce a union nobody can read. The shapes are
+    stable and documented per chart in `aggregates.py`.
     """
 
     chart: str
