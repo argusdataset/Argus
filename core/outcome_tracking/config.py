@@ -8,8 +8,11 @@ against labels this module assigns. The criterion that assigns them is
 therefore not an implementation detail; it is the claim being tested, and
 it is stated once, here, versioned, and stored with every row it labels.
 
-**`+10% before -5% within 60 trading days`, measured from the setup's
-`activated` event.**
+**`+1.5×ATR before -0.75×ATR within 60 trading days`, measured from the
+setup's `activated` event.** ATR is the 20-session average true range as
+of entry — Module 08's own primitive (`core.feature_engine.panel.
+true_range`), recomputed here from the same PIT-bounded price panel this
+module already loads, never a second implementation of it.
 
 That is deliberately the same string Module 13 stores as
 `PROBABILITY_DEFINITION`, and the sameness is load-bearing rather than
@@ -20,13 +23,32 @@ calibrated to predict something other than what the dataset records, and
 nothing would fail — the numbers would simply mean something nobody
 intended. A test asserts they are identical.
 
+## Volatility-normalized, not a flat percentage — and why that is structural
+
+A flat threshold applied uniformly is a structural flaw, not a
+calibration detail: a low-volatility large-cap and a high-volatility
+penny stock have completely different "normal" daily ranges, so a flat
+percentage systematically misclassifies outcomes — inflating the win rate
+for naturally volatile securities and deflating it for stable ones,
+before any real pattern signal is measured. `target_atr_multiple` and
+`stop_atr_multiple` scale the criterion to each security's own measured
+volatility at the moment of entry instead.
+
+This was fixed before any real historical scan ran, deliberately: a scan
+run against the flat criterion and later recalibrated would need
+redoing entirely, not adjusting — every stored outcome cites the
+criterion that labelled it, and there is no partial migration from one
+success definition to another.
+
 ## Unvalidated, like everything else
 
-The three numbers in the criterion are invented. 10% and 5% are a
-plausible asymmetry for a pattern that expects expansion, not a measured
-one; 60 trading days is a guess at how long an expansion takes to start.
-They are placeholders in exactly the sense Modules 10 to 14's thresholds
-are, and every stored outcome cites the snapshot that pins them.
+The numbers in the criterion are invented. 1.5 and 0.75 are a plausible
+asymmetry for a pattern that expects expansion, not a measured one — the
+same asymmetry the flat criterion used, now expressed as a volatility
+multiple instead of a flat percentage; 60 trading days is a guess at how
+long an expansion takes to start. They are placeholders in exactly the
+sense Modules 10 to 14's thresholds are, and every stored outcome cites
+the snapshot that pins them.
 
 Changing any of them changes what SUCCESS means, so a change is a new
 `data_snapshot` row and outcomes computed under the old definition stay
@@ -55,7 +77,10 @@ CALIBRATABLE = "calibratable"
 
 #: The predefined outcome, in words. Identical to Module 13's
 #: `PROBABILITY_DEFINITION` — see the module docstring on why that matters.
-SUCCESS_DEFINITION = "+10% before -5% within 60 trading days"
+SUCCESS_DEFINITION = (
+    "+1.5×ATR before -0.75×ATR within 60 trading days "
+    "(ATR: 20-session average true range at entry)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,24 +104,31 @@ class OutcomeThresholds:
     """The success criterion, plus the numbers the CASE heuristics apply."""
 
     # -- The criterion itself ------------------------------------------------
-    target_gain: OutcomeThreshold = field(
+    target_atr_multiple: OutcomeThreshold = field(
         default_factory=lambda: _t(
-            0.10,
+            1.5,
             CALIBRATABLE,
-            "Gain from entry that counts as the expansion having happened. "
-            "Asymmetric against the stop on purpose — the pattern expects "
-            "expansion, so a symmetric criterion would label a sideways "
-            "drift as often as a real move — but the specific 2:1 ratio is "
-            "invented.",
+            "Multiple of entry ATR that counts as the expansion having "
+            "happened. Volatility-normalized rather than a flat "
+            "percentage: a flat threshold applied uniformly systematically "
+            "misclassifies outcomes across securities of different "
+            "volatility, inflating the win rate for naturally volatile "
+            "names and deflating it for stable ones, before any real "
+            "pattern signal is measured. Asymmetric against the stop for "
+            "the same reason the prior flat criterion was — the pattern "
+            "expects expansion, so a symmetric criterion would label a "
+            "sideways drift as often as a real move — but the specific "
+            "2:1 ratio is invented.",
         )
     )
-    stop_loss: OutcomeThreshold = field(
+    stop_atr_multiple: OutcomeThreshold = field(
         default_factory=lambda: _t(
-            -0.05,
+            -0.75,
             CALIBRATABLE,
-            "Adverse move from entry that counts as the thesis having "
+            "Multiple of entry ATR that counts as the thesis having "
             "failed. Negative by convention so it is never mistaken for a "
-            "magnitude.",
+            "magnitude. Volatility-normalized for the same reason "
+            "target_atr_multiple is.",
         )
     )
     horizon_trading_days: OutcomeThreshold = field(

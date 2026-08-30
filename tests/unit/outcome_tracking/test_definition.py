@@ -81,8 +81,8 @@ def test_the_definition_and_the_thresholds_say_the_same_thing():
     be worse than no string at all."""
     thresholds = OutcomeThresholds()
 
-    assert f"+{thresholds.target_gain.value:.0%}" in SUCCESS_DEFINITION
-    assert f"-{abs(thresholds.stop_loss.value):.0%}" in SUCCESS_DEFINITION
+    assert f"+{thresholds.target_atr_multiple.value:g}×ATR" in SUCCESS_DEFINITION
+    assert f"-{abs(thresholds.stop_atr_multiple.value):g}×ATR" in SUCCESS_DEFINITION
     assert f"{thresholds.horizon_trading_days.value:.0f} trading days" in SUCCESS_DEFINITION
 
 
@@ -91,9 +91,8 @@ def test_the_stop_is_negative_and_the_target_positive():
     would silently invert every failure test."""
     thresholds = OutcomeThresholds()
 
-    assert thresholds.target_gain.value > 0
-    assert thresholds.stop_loss.value < 0
-    assert thresholds.breakdown_floor.value < thresholds.stop_loss.value
+    assert thresholds.target_atr_multiple.value > 0
+    assert thresholds.stop_atr_multiple.value < 0
 
 
 def test_every_number_is_enumerable_and_declares_its_kind():
@@ -110,7 +109,7 @@ def test_most_of_the_criterion_is_admitted_to_be_invented():
     calibratable = set(thresholds.calibratable())
 
     assert len(calibratable) > len(set(OutcomeThresholds.names()) - calibratable)
-    assert {"target_gain", "stop_loss", "horizon_trading_days"} <= calibratable
+    assert {"target_atr_multiple", "stop_atr_multiple", "horizon_trading_days"} <= calibratable
 
 
 def test_the_published_definition_says_the_numbers_are_unvalidated():
@@ -136,7 +135,9 @@ def test_changing_the_criterion_changes_the_configuration_checksum():
     baseline = OutcomeConfig()
     changed = OutcomeConfig(
         thresholds=OutcomeThresholds(
-            target_gain=OutcomeThreshold(value=0.20, kind=CALIBRATABLE, rationale="recalibrated")
+            target_atr_multiple=OutcomeThreshold(
+                value=2.0, kind=CALIBRATABLE, rationale="recalibrated"
+            )
         )
     )
 

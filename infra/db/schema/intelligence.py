@@ -200,8 +200,8 @@ signals = Table(
     Column("risk_score", _SCORE, nullable=True),
     Column("probability", _SCORE, nullable=True),
     # The predefined outcome `probability` refers to, e.g.
-    # "+10% before -5% within 60 trading days". Stored alongside because
-    # a probability without its definition means nothing.
+    # "+1.5×ATR before -0.75×ATR within 60 trading days". Stored alongside
+    # because a probability without its definition means nothing.
     Column("probability_definition", Text, nullable=True),
     # --- the seven-component breakdown ---
     # Scores are never a single opaque number; a user can always see why.

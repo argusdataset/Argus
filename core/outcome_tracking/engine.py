@@ -21,10 +21,10 @@ snapshot inserts nothing rather than raising, because silently overwriting
 the row a Module 17 run already read would make that run unreproducible.
 
 Under a *different* snapshot it computes and writes a new row, which is
-the point of 0007: Module 15's success criterion (+10% / -5% / 60 days) is
-an admitted placeholder, and relabelling the dataset when it is revised
-means publishing a new snapshot and re-running. The old row stays exactly
-as written — it is still the right answer to its own question.
+the point of 0007: Module 15's success criterion (+1.5×ATR / -0.75×ATR /
+60 days) is an admitted placeholder, and relabelling the dataset when it
+is revised means publishing a new snapshot and re-running. The old row
+stays exactly as written — it is still the right answer to its own question.
 
 ## Failures get the same code path as successes
 

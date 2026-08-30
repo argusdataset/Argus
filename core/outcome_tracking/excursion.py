@@ -51,7 +51,8 @@ import pandas as pd
 from sqlalchemy.engine import Connection
 
 from core.data_validation.calendar import expected_trading_days
-from core.feature_engine.panel import PricePanel, load_panel
+from core.feature_engine.panel import PricePanel, load_panel, true_range
+from core.feature_engine.spec import FeatureSpec
 from core.feature_engine.timeframes import periods_per_year
 from core.outcome_tracking.config import OutcomeThresholds
 from data.canonical_model.records import CanonicalTimeframe
@@ -63,6 +64,13 @@ NO_BARS = "no_bars_in_window"
 TOO_FEW_BARS = "too_few_bars"
 NO_ENTRY_PRICE = "no_entry_price"
 NO_BENCHMARK = "no_benchmark"
+#: ATR could not be measured at entry — too little price history before
+#: activation. The criterion cannot resolve without it: `target_hit_at`
+#: and `stop_hit_at` both stay `None` rather than falling back to a flat
+#: percentage, which would silently reintroduce the flaw this exists to
+#: fix for exactly the securities it is riskiest to get wrong (those with
+#: the shortest histories).
+NO_ATR = "no_atr_at_entry"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +128,19 @@ class Excursion:
     #: was. Both None means the criterion did not resolve in the window.
     target_hit_at: datetime | None = None
     stop_hit_at: datetime | None = None
+    #: The 20-session ATR at entry, in price units — not a fraction. None
+    #: whenever it could not be measured (`NO_ATR`), in which case
+    #: `target_threshold`/`stop_threshold` are None too and the criterion
+    #: did not resolve.
+    atr_at_entry: float | None = None
+    #: The actual crossing levels this specific setup was measured
+    #: against, as fractions of entry price — `target_atr_multiple *
+    #: (atr_at_entry / entry_price)` and the stop's equivalent. Recorded
+    #: rather than left implicit: the multiplier alone does not say what
+    #: percentage move it meant for *this* security, and a reviewer
+    #: reading one row should not have to recompute it.
+    target_threshold: float | None = None
+    stop_threshold: float | None = None
     bars_observed: int = 0
     unavailable: tuple[str, ...] = ()
 
@@ -145,6 +166,9 @@ class Excursion:
             "volatility_adjusted_outcome": self.volatility_adjusted_outcome,
             "target_hit_at": _iso(self.target_hit_at),
             "stop_hit_at": _iso(self.stop_hit_at),
+            "atr_at_entry": self.atr_at_entry,
+            "target_threshold": self.target_threshold,
+            "stop_threshold": self.stop_threshold,
             "bars_observed": self.bars_observed,
             "unavailable": list(self.unavailable),
         }
@@ -249,6 +273,25 @@ def measure(
     if benchmark is None:
         unavailable.append(NO_BENCHMARK)
 
+    # The criterion is volatility-normalized: a flat percentage applied
+    # uniformly misclassifies outcomes across securities of different
+    # volatility. ATR is measured at entry, from the same panel already
+    # loaded, using Module 08's own primitive — see the module docstring.
+    atr_window = int(FeatureSpec().windows.medium)
+    atr = _atr_at_entry(panel, security_id, window.entry_at, atr_window)
+    target_threshold: float | None = None
+    stop_threshold: float | None = None
+    target_hit_at: datetime | None = None
+    stop_hit_at: datetime | None = None
+    if atr is None:
+        unavailable.append(NO_ATR)
+    else:
+        atr_fraction = atr / entry_price
+        target_threshold = thresholds.target_atr_multiple.value * atr_fraction
+        stop_threshold = thresholds.stop_atr_multiple.value * atr_fraction
+        target_hit_at = _first_crossing(high_ratio, target_threshold, above=True)
+        stop_hit_at = _first_crossing(low_ratio, stop_threshold, above=False)
+
     realized = exit_price / entry_price - 1.0
     return Excursion(
         window=window,
@@ -261,8 +304,11 @@ def measure(
         realized_return=realized,
         benchmark_relative_return=None if benchmark is None else realized - benchmark,
         volatility_adjusted_outcome=_volatility_adjusted(frame["close"], realized),
-        target_hit_at=_first_crossing(high_ratio, thresholds.target_gain.value, above=True),
-        stop_hit_at=_first_crossing(low_ratio, thresholds.stop_loss.value, above=False),
+        target_hit_at=target_hit_at,
+        stop_hit_at=stop_hit_at,
+        atr_at_entry=atr,
+        target_threshold=target_threshold,
+        stop_threshold=stop_threshold,
         bars_observed=len(frame),
         unavailable=tuple(unavailable),
     )
@@ -274,9 +320,18 @@ def measure(
 
 
 def _bars_to_load(entry_at: datetime, as_of: datetime, thresholds: OutcomeThresholds) -> int:
-    """Enough lookback for the whole window plus the entry bar itself."""
+    """Enough lookback for the whole window, the entry bar, and the ATR.
+
+    `max_lookback_bars` counts backward from `as_of`, not from
+    `entry_at` — so on top of the session count spanning the outcome
+    window itself, this adds the trailing ATR window (plus one, for
+    `true_range`'s own `shift(1)` against the previous close) so the
+    loaded panel actually reaches back before entry far enough to measure
+    volatility *at* entry, not merely during the window that follows it.
+    """
     sessions = expected_trading_days(entry_at.date(), as_of.date())
-    return max(len(sessions), int(thresholds.min_bars_for_outcome.value))
+    atr_window = int(FeatureSpec().windows.medium)
+    return max(len(sessions) + atr_window + 1, int(thresholds.min_bars_for_outcome.value))
 
 
 def _window_frame(panel: PricePanel, security_id: UUID, window: OutcomeWindow) -> pd.DataFrame:
@@ -301,6 +356,36 @@ def _window_frame(panel: PricePanel, security_id: UUID, window: OutcomeWindow) -
         return frame.iloc[:0]
     start = at_or_before[-1]
     return frame.loc[(frame.index >= start) & (frame.index <= window.ends_at)]
+
+
+def _atr_at_entry(
+    panel: PricePanel, security_id: UUID, entry_at: datetime, window: int
+) -> float | None:
+    """The trailing `window`-session average true range, ending at entry.
+
+    Module 08's own `true_range` (`core.feature_engine.panel`), applied to
+    the same panel `measure()` already loaded and averaged over the same
+    window Module 08 uses for its own ATR feature
+    (`FeatureSpec().windows.medium`) — not a second implementation, and
+    not read from a stored feature vector: a vector might not exist at
+    the exact activation instant, and `select_latest_as_of` falling back
+    to an older one could be stale by exactly the days that matter most
+    for a volatility-normalized criterion. Recomputing from the panel
+    already in hand keeps this measurement exactly as PIT-bounded as
+    every other one in this module.
+
+    `None` when there is not `window` sessions of history at or before
+    entry — a security too newly listed to measure. Reported as `NO_ATR`
+    rather than falling back to a flat percentage.
+    """
+    if security_id not in panel.close_adj.columns:
+        return None
+    ranges = true_range(panel)[security_id].dropna()
+    at_or_before = ranges.loc[ranges.index <= entry_at]
+    if len(at_or_before) < window:
+        return None
+    value = float(at_or_before.iloc[-window:].mean())
+    return value if np.isfinite(value) and value > 0.0 else None
 
 
 def _first_crossing(ratios: pd.Series, level: float, *, above: bool) -> datetime | None:

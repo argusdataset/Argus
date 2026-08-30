@@ -459,6 +459,51 @@ with `ARGUS_TRUSTED_PROXIES` set explicitly to the old three ranges, needs
 effect for it — the code default does not retroactively change a value a
 deployment overrode.
 
+### E5. The success criterion used a flat percentage, not per-security volatility — **RESOLVED**
+
+Module 15's `SUCCESS_DEFINITION` was `+10% before -5% within 60 trading
+days`, applied identically to every security. That is a structural flaw,
+not a calibration detail: a low-volatility large-cap and a high-volatility
+penny stock have completely different "normal" daily ranges, so a flat
+percentage systematically misclassifies outcomes — inflating the win rate
+for naturally volatile securities and deflating it for stable ones, before
+any real pattern signal is measured.
+
+Fixed before any real historical scan ran, per the report that raised it:
+recalibrating after a scan had already run against the flat criterion
+would have meant redoing the whole scan, not adjusting it. The criterion
+is now `+1.5×ATR before -0.75×ATR within 60 trading days`, where ATR is
+the 20-session average true range at entry, computed with Module 08's own
+`true_range` primitive (`core/feature_engine/panel.py`) directly from the
+PIT-bounded price panel `core/outcome_tracking/excursion.py` already
+loads — not a stored feature vector, which might not exist at the exact
+activation instant, and not a second implementation of ATR. A security
+with fewer than 20 sessions of pre-entry history gets no resolved
+criterion at all (`NO_ATR`) rather than a flat-percentage fallback, which
+would have silently reintroduced the flaw for exactly the securities
+where getting it wrong matters most.
+
+`target_gain`/`stop_loss` (flat fractions) became
+`target_atr_multiple`/`stop_atr_multiple` (ATR multiples) in
+`OutcomeThresholds`; the actual per-setup threshold each security was
+measured against is now recorded on `Excursion`
+(`atr_at_entry`/`target_threshold`/`stop_threshold`) rather than left
+implicit in the multiplier alone. `SUCCESS_DEFINITION` and Module 13's
+`PROBABILITY_DEFINITION` were updated together and remain
+string-identical, asserted by
+`tests/unit/outcome_tracking/test_definition.py`. A new
+`tests/integration/outcome_tracking/test_atr_normalization.py` proves the
+fix directly: two securities making the byte-identical post-entry price
+move resolve differently — one SUCCESS, one unresolved — depending only
+on how volatile each was *before* entry.
+
+Both false-positive-taxonomy heuristics that also reference a percentage
+(`expansion_floor`, `breakdown_floor`) were left as flat percentages —
+out of scope: they classify *why* a non-SUCCESS outcome failed, not
+whether the predefined criterion itself resolved, and the report that
+raised this issue was scoped to the success criterion specifically. If
+the same reasoning should extend to them, that is a separate decision.
+
 ---
 
 ## F. Minor / cosmetic
@@ -484,7 +529,7 @@ one might not.
 | HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3 |
+| — | — | — | C2, E1, E2, E3, E4, E5 |
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were

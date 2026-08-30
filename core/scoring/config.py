@@ -60,7 +60,17 @@ SCORE_MAX = 100.0
 #: The outcome `probability` would refer to, if a calibrated model
 #: existed. Stored with every signal so the structure is present and the
 #: absence of a number is unambiguous.
-PROBABILITY_DEFINITION = "+10% before -5% within 60 trading days"
+#:
+#: Identical to Module 15's `SUCCESS_DEFINITION`
+#: (`core/outcome_tracking/config.py`) — a test asserts it, because a
+#: calibrated model fitted against Module 15's labels must be predicting
+#: the same thing this string claims it predicts. Volatility-normalized
+#: rather than a flat percentage: see that module's docstring for why a
+#: flat threshold is a structural flaw rather than a calibration detail.
+PROBABILITY_DEFINITION = (
+    "+1.5×ATR before -0.75×ATR within 60 trading days "
+    "(ATR: 20-session average true range at entry)"
+)
 
 #: Appended to the stored definition because `signals` has no JSONB
 #: column to carry it. See the module README on that gap.

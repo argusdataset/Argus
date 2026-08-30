@@ -23,7 +23,7 @@ score.
 ## Hit rate is not precision
 
 Precision asks how often a committed setup met Module 15's success
-definition (+10% / -5% / 60 days, a placeholder). Hit rate asks how often
+definition (+1.5×ATR / -0.75×ATR / 60 days, a placeholder). Hit rate asks how often
 it beat its benchmark. They answer different questions and can move in
 opposite directions — a setup that rose 6% while SPY fell 4% is not a
 success and is a hit — so they are reported separately and never averaged.

@@ -8,8 +8,10 @@ everything downstream inherits it invisibly.
 
 ## The success definition
 
-**`+10% before -5% within 60 trading days`**, measured from the setup's
-`activated` event.
+**`+1.5×ATR before -0.75×ATR within 60 trading days`**, measured from the
+setup's `activated` event. ATR is the 20-session average true range as of
+entry — Module 08's own `true_range` primitive, recomputed from the same
+PIT-bounded price panel this module already loads.
 
 That string is deliberately identical to Module 13's
 `PROBABILITY_DEFINITION`, and a test asserts it. Module 13 reserves
@@ -19,10 +21,23 @@ drift, the model would be calibrated to predict something other than what
 the dataset records — and nothing would fail, the numbers would simply
 mean something nobody intended.
 
-All three numbers are invented placeholders. Changing any of them
-relabels the dataset, so a change becomes a new `data_snapshot` and
-outcomes computed under the old criterion stay attributable to it. That is
-what `setup_outcomes.data_snapshot_id` (migration 0006) is for.
+**Volatility-normalized, not a flat percentage.** A flat threshold
+applied uniformly is a structural flaw, not a calibration detail: a
+low-volatility large-cap and a high-volatility penny stock have
+completely different "normal" daily ranges, so a flat percentage
+systematically misclassifies outcomes — inflating the win rate for
+naturally volatile securities and deflating it for stable ones, before
+any real pattern signal is measured. Scaling the target and stop to each
+security's own measured volatility at entry fixes that. A security with
+too little price history to measure a 20-session ATR at entry gets no
+resolved criterion at all (`NO_ATR`) rather than a flat-percentage
+fallback, which would silently reintroduce the flaw for exactly the
+securities it is riskiest to get wrong.
+
+All the numbers are invented placeholders. Changing any of them relabels
+the dataset, so a change becomes a new `data_snapshot` and outcomes
+computed under the old criterion stay attributable to it. That is what
+`setup_outcomes.data_snapshot_id` (migration 0006) is for.
 
 ## Status: criterion first, terminal event second
 
@@ -35,11 +50,11 @@ otherwise                           → EXPIRED
 
 In every ordinary case this reproduces Module 14's terminal-event mapping
 exactly. It diverges only where the literal mapping is wrong: a setup can
-reach `+10%` on day thirty and still be closed by Module 14's expiry or by
-an administrative invalidation, because Module 14 watches market states
-and eligibility, not price. Labelling that `EXPIRED` would put a resolved
-success into the dataset as an unresolved non-event and make Module 17's
-hit rate quietly too low.
+reach its ATR-relative target on day thirty and still be closed by
+Module 14's expiry or by an administrative invalidation, because Module
+14 watches market states and eligibility, not price. Labelling that
+`EXPIRED` would put a resolved success into the dataset as an unresolved
+non-event and make Module 17's hit rate quietly too low.
 
 **Both thresholds on one bar resolve as `FAILED`.** Daily bars do not
 record intrabar order, so the adverse case is assumed — it can only

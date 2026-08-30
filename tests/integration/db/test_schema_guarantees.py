@@ -170,7 +170,7 @@ def test_scored_signal_accepts_all_five_numbers(engine: Engine):
             _signal_params(
                 ids,
                 probability=62,
-                probability_definition="+10% before -5% within 60 trading days",
+                probability_definition="+1.5×ATR before -0.75×ATR within 60 trading days",
             ),
         )
 

@@ -27,7 +27,7 @@ re-approving the model every day, which is ceremony rather than review.
 **It loses to two specific facts about this system.**
 
 First, an outcome is not purely mechanical. Module 15's success criterion
-— +10% / -5% / 60 days — is an admitted, invented placeholder, and so are
+— +1.5×ATR / -0.75×ATR / 60 days — is an admitted, invented placeholder, and so are
 `review_confidence`'s automated classification policy and
 `false_positive_type`'s A–D boundaries. Module 15 said explicitly that
 these need measuring against actual human review agreement. An outcome
