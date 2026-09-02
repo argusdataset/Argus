@@ -40,3 +40,7 @@ Thumbs.db
 .coverage.*
 htmlcov/
 coverage.xml
+
+# Railway IaC tooling (see .railway/README.md)
+.railway/node_modules/
+.railway/package-lock.json

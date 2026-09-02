@@ -1,0 +1,9 @@
+{
+  "name": "argus-railway-config",
+  "private": true,
+  "description": "Dependencies for the Railway IaC authoring file. Not part of the ARGUS application, which is Python.",
+  "dependencies": {
+    "railway": "latest"
+  },
+  "comment": "Version left as 'latest': pin it to the version you actually install, once `npm install` has resolved one."
+}

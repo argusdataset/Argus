@@ -1,101 +1,190 @@
-"""The committed Railway configuration, checked against its generator.
+"""The committed Railway IaC file, checked against its generator.
 
-A generated file that is committed has one failure mode: somebody edits
-the generator, forgets to regenerate, and the platform keeps deploying
-last week's command. The point of committing it at all is that it is
-reviewable in a pull request, and it is only reviewable if it is true.
+A generated file that is committed has one failure mode: somebody edits the
+generator, forgets to regenerate, and the platform keeps deploying last
+week's command. The point of committing it is that it is reviewable in a
+pull request, and it is only reviewable if it is true.
+
+The previous version of this module tested seven `railway.json` files. Those
+are gone: Railway deprecated Config as Code, and an audit of the live project
+found none of them had ever been read — all three deployed services were
+building with Railpack. These tests are deliberately harder to satisfy
+vacuously than those were, because those passed for months while describing
+a deployment that did not exist.
 """
 
 from __future__ import annotations
 
-import json
+import re
 
 import pytest
 
 from infra.deploy.processes import PRE_DEPLOY_COMMAND, PROCESSES
-from infra.deploy.railway import CONFIG_DIR, config_for, render_all
+from infra.deploy.railway import (
+    DOCKERFILE_PATH,
+    HEALTHCHECK_TIMEOUT_SECONDS,
+    IAC_PATH,
+    POSTGRES_SERVICE,
+    RESTART_MAX_RETRIES,
+    RESTART_POLICY,
+    SERVICE_NAMES,
+    UNSUPPORTED_BY_IAC,
+    dashboard_settings,
+    render,
+)
 
 SECRET_SHAPED = ("password", "secret", "token", "api_key", "apikey", "credential")
 
 
-def test_there_is_one_config_file_per_process():
-    committed = {path.name for path in CONFIG_DIR.glob("*.json")}
-    assert committed == set(render_all())
+@pytest.fixture(scope="module")
+def committed() -> str:
+    return IAC_PATH.read_text()
 
 
-@pytest.mark.parametrize("filename", sorted(render_all()))
-def test_the_committed_file_matches_what_the_generator_produces_now(filename: str):
+def test_the_committed_file_matches_what_the_generator_produces_now(committed: str):
     """Regenerate with `python -m infra.deploy.railway` when this fails."""
-    assert (CONFIG_DIR / filename).read_text() == render_all()[filename]
+    assert committed == render()
+
+
+def test_there_is_exactly_one_authoring_file():
+    """Railway refuses to choose between two. `.railway/` holds ts, py or go."""
+    siblings = sorted(p.name for p in IAC_PATH.parent.glob("railway.*"))
+    assert siblings == ["railway.ts"]
 
 
 @pytest.mark.parametrize("name", sorted(PROCESSES))
-def test_the_start_command_is_the_process_definition_verbatim(name: str):
-    config = json.loads((CONFIG_DIR / f"{name}.json").read_text())
-    assert config["deploy"]["startCommand"] == PROCESSES[name].command()
+def test_the_start_command_is_the_process_definition_verbatim(name: str, committed: str):
+    assert PROCESSES[name].command() in committed
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_every_process_appears_under_its_real_railway_name(name: str, committed: str):
+    """Renaming here does not rename on Railway. It destroys and recreates.
+
+    A service recreated under a new name loses its variables and its
+    deployment history, so the names in SERVICE_NAMES track the dashboard
+    rather than the other way round.
+    """
+    assert f'service("{SERVICE_NAMES[name]}"' in committed
+
+
+def test_the_database_is_declared_so_apply_cannot_offer_to_delete_it(committed: str):
+    """IaC reads omission as deletion. Postgres is the one resource whose
+    deletion is not recoverable from this repository."""
+    assert f'postgres("{POSTGRES_SERVICE}")' in committed
+
+
+def test_every_resource_is_reachable_from_the_project(committed: str):
+    """A service defined but left out of `resources` is a service apply
+    would offer to destroy — the failure this test exists to catch."""
+    resources = re.search(r"resources: \[([^\]]*)\]", committed)
+    assert resources is not None
+    listed = {item.strip() for item in resources.group(1).split(",")}
+    expected = {"db"} | {name if name != "identity" else "identityService" for name in PROCESSES}
+    assert listed == expected
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_only_web_services_are_health_checked(name: str, committed: str):
+    block = _service_block(committed, SERVICE_NAMES[name])
+    if PROCESSES[name].is_web:
+        assert 'healthcheck: "/health/live"' in block
+        assert f"healthcheckTimeout: {HEALTHCHECK_TIMEOUT_SECONDS}" in block
+    else:
+        # A cron service has no path to poll and no process running between
+        # firings. A probe on one answers a question nobody is asking.
+        assert "healthcheck" not in block
+
+
+def test_no_secret_value_is_written_into_the_file(committed: str):
+    """Secrets reach a deployed process through `SecretsProvider`. A
+    committed value would be a second place they live and a second place
+    they leak — and this file is in git."""
+    for line in committed.splitlines():
+        if line.strip().startswith("//"):
+            continue
+        lowered = line.lower()
+        if any(word in lowered for word in SECRET_SHAPED):
+            assert "preserve()" in line, f"secret-shaped line carries a value: {line!r}"
+
+
+def test_the_environment_decides_the_profile_rather_than_a_per_service_literal(
+    committed: str,
+):
+    """Two of the three live services ran the development profile in
+    production because ARGUS_ENV was written down per service and one copy
+    was wrong. Deriving it from the Railway environment removes the copies."""
+    assert 'ARGUS_ENV: prod ? "production" : "staging"' in committed
+    assert 'ARGUS_ENV: "development"' not in committed
+
+
+def test_the_scanner_is_told_its_universe(committed: str):
+    """scanner.py raises ScannerNotReady rather than guessing one."""
+    block = _service_block(committed, SERVICE_NAMES["scanner"])
+    assert "ARGUS_UNIVERSE_VERSION" in block
+
+
+# --- the half IaC cannot carry ------------------------------------------
+
+
+def test_the_iac_gap_is_recorded_rather_than_remembered():
+    """Four settings have no field in the DSL. Naming them in data is what
+    keeps `railway config apply` from looking like a complete deployment."""
+    settings = {setting for setting, _, _ in UNSUPPORTED_BY_IAC}
+    assert settings == {
+        "dockerfile",
+        "preDeployCommand",
+        "cronSchedule",
+        "restartPolicy",
+    }
+    for _, processes, reason in UNSUPPORTED_BY_IAC:
+        assert processes, "a gap that affects no process is not a gap"
+        assert reason.strip(), "a gap without its consequence is a shrug"
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_every_service_builds_from_the_dockerfile(name: str):
+    """Railpack builds a different image: no non-root user, and no
+    postgresql-client, which is what backup.py shells out to."""
+    settings = dashboard_settings(name)
+    assert settings["builder"] == "DOCKERFILE"
+    assert settings["dockerfilePath"] == DOCKERFILE_PATH
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_a_failed_container_stops_rather_than_restarting_forever(name: str):
+    settings = dashboard_settings(name)
+    assert settings["restartPolicyType"] == RESTART_POLICY
+    assert settings["restartPolicyMaxRetries"] == RESTART_MAX_RETRIES > 0
 
 
 def test_exactly_one_service_owns_the_migration():
-    """Seven services running the same migration would race.
-
-    Alembic's version table is not a lock, so concurrent `upgrade head`
-    calls are a genuine race rather than a redundant one.
-    """
-    owners = [
-        name
-        for name in PROCESSES
-        if json.loads((CONFIG_DIR / f"{name}.json").read_text())["deploy"].get("preDeployCommand")
-    ]
+    """Seven services running the same migration would race. Alembic's
+    version table is not a lock."""
+    owners = [name for name in PROCESSES if "preDeployCommand" in dashboard_settings(name)]
     assert owners == ["identity"]
 
 
 def test_the_migration_runs_as_a_pre_deploy_command():
     """Which is what makes it run *before* traffic reaches the new code.
 
-    A migration invoked at application startup would run after the
-    container is already accepting traffic — and once per container.
+    Run from the start command instead — as the live deployment did until
+    this was fixed — a failed migration is a crash loop rather than an
+    abandoned deploy, and it runs once per container rather than once.
     """
-    deploy = json.loads((CONFIG_DIR / "identity.json").read_text())["deploy"]
-    assert deploy["preDeployCommand"] == PRE_DEPLOY_COMMAND
+    assert dashboard_settings("identity")["preDeployCommand"] == [PRE_DEPLOY_COMMAND]
 
 
 @pytest.mark.parametrize("name", sorted(PROCESSES))
-def test_only_web_services_are_health_checked(name: str):
-    deploy = json.loads((CONFIG_DIR / f"{name}.json").read_text())["deploy"]
-    if PROCESSES[name].is_web:
-        assert deploy["healthcheckPath"] == "/health/live"
-        assert deploy["healthcheckTimeout"] > 0
+def test_only_cron_processes_carry_a_schedule(name: str):
+    settings = dashboard_settings(name)
+    if PROCESSES[name].schedule:
+        assert settings["cronSchedule"] == PROCESSES[name].schedule
     else:
-        assert "healthcheckPath" not in deploy
+        assert "cronSchedule" not in settings
 
 
-@pytest.mark.parametrize("name", sorted(PROCESSES))
-def test_a_failed_container_stops_rather_than_restarting_forever(name: str):
-    """A crash loop that looks like activity hides a container that cannot start."""
-    deploy = json.loads((CONFIG_DIR / f"{name}.json").read_text())["deploy"]
-    assert deploy["restartPolicyType"] == "ON_FAILURE"
-    assert deploy["restartPolicyMaxRetries"] > 0
-
-
-@pytest.mark.parametrize("name", sorted(PROCESSES))
-def test_no_config_declares_an_environment_variable(name: str):
-    """Secrets reach a deployed process through `SecretsProvider` and nowhere else.
-
-    A committed config listing variables would be a second place they
-    live and a second place they leak — and this file is in git.
-    """
-    config = json.loads((CONFIG_DIR / f"{name}.json").read_text())
-    assert "variables" not in config
-    assert "environment" not in config
-    assert "env" not in config.get("deploy", {})
-
-    body = json.dumps(config).lower()
-    for word in SECRET_SHAPED:
-        assert word not in body, f"{name}.json mentions {word!r}"
-
-
-def test_config_for_reads_the_process_rather_than_a_name():
-    """The generator takes a definition, so a test can pass a made-up one."""
-    scanner = config_for(PROCESSES["scanner"])
-    assert scanner["deploy"]["cronSchedule"] == PROCESSES["scanner"].schedule
-    assert "healthcheckPath" not in scanner["deploy"]
+def _service_block(committed: str, service_name: str) -> str:
+    start = committed.index(f'service("{service_name}"')
+    end = committed.index("});", start)
+    return committed[start:end]
