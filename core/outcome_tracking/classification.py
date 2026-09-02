@@ -282,19 +282,47 @@ def _false_positive(
         )
 
     # -- Structural verdicts ------------------------------------------------
+    #
+    # B, C and D are separated by how far the security moved *relative to
+    # its own volatility*, for the same reason the criterion itself is:
+    # a flat percentage grades "did this move at all" on a scale that
+    # means something different for every name. Both floors arrive as ATR
+    # multiples and are resolved against this setup's own entry ATR.
     excursion = inputs.excursion
+    atr_fraction = excursion.atr_fraction
+    if atr_fraction is None:
+        # No volatility scale, so "meaningful move" has no meaning here.
+        # Reported as an unclassified negative rather than defaulted into
+        # type B, which would assert the structure went nowhere on the
+        # strength of a measurement that does not exist. `review_confidence`
+        # is already LOW whenever the excursion carries an unavailable
+        # reason, so the row is flagged for a human without this inventing
+        # a verdict.
+        return (
+            None,
+            "The false-positive type could not be assigned: entry ATR was not "
+            "measurable, so there is no scale on which to judge whether this "
+            "security's excursion counts as movement. "
+            + ", ".join(excursion.unavailable),
+            WEAK,
+        )
+
+    expansion_floor = thresholds.expansion_atr_multiple.value * atr_fraction
+    breakdown_floor = thresholds.breakdown_atr_multiple.value * atr_fraction
+
     realized = excursion.realized_return
-    if realized is not None and realized <= thresholds.breakdown_floor.value:
+    if realized is not None and realized <= breakdown_floor:
         return (
             FalsePositiveType.D_BREAKDOWN,
             f"Realized return of {realized:.1%} is past the "
-            f"{thresholds.breakdown_floor.value:.1%} breakdown floor: the base gave way "
-            "rather than merely failing to expand.",
+            f"{breakdown_floor:.1%} breakdown floor "
+            f"({thresholds.breakdown_atr_multiple.value:g}x this security's entry ATR): "
+            "the base gave way rather than merely failing to expand.",
             INFERRED,
         )
 
     mfe = excursion.mfe
-    if mfe is not None and mfe >= thresholds.expansion_floor.value:
+    if mfe is not None and mfe >= expansion_floor:
         return (
             FalsePositiveType.C_FALSE_BREAKOUT,
             f"The setup advanced {mfe:.1%} before failing — it broke out and did not "
@@ -305,7 +333,8 @@ def _false_positive(
     return (
         FalsePositiveType.B_PATTERN_NO_EXPANSION,
         f"The structure formed but went nowhere: peak favourable excursion of "
-        f"{mfe:.1%} is under the {thresholds.expansion_floor.value:.1%} floor."
+        f"{mfe:.1%} is under the {expansion_floor:.1%} floor "
+        f"({thresholds.expansion_atr_multiple.value:g}x this security's entry ATR)."
         if mfe is not None
         else "The structure formed but no expansion was measurable.",
         WEAK,

@@ -497,12 +497,74 @@ fix directly: two securities making the byte-identical post-entry price
 move resolve differently — one SUCCESS, one unresolved — depending only
 on how volatile each was *before* entry.
 
-Both false-positive-taxonomy heuristics that also reference a percentage
-(`expansion_floor`, `breakdown_floor`) were left as flat percentages —
-out of scope: they classify *why* a non-SUCCESS outcome failed, not
-whether the predefined criterion itself resolved, and the report that
-raised this issue was scoped to the success criterion specifically. If
-the same reasoning should extend to them, that is a separate decision.
+The two false-positive-taxonomy heuristics that also referenced a flat
+percentage (`expansion_floor`, `breakdown_floor`) were initially left
+alone as out of scope, then normalized in a follow-up once a
+methodological audit confirmed they carried the identical flaw — see E6.
+
+### E6. Two more flat thresholds carrying the same flaw — **RESOLVED**
+
+A methodological audit swept Modules 08–17 for flat numeric thresholds
+applied uniformly across a universe of heterogeneous securities. Most of
+the codebase came back clean: nearly every threshold is already
+self-relative (a percentile against the security's own history, a ratio
+of recent to prior, a position within its own range, or — in Module 11 —
+a distance divided by a per-feature robust scale). Two were not.
+
+**`level_test` (Module 08, `feature_engine/spec.py`).** A flat ±1.5% of
+price defining "price came close enough to this level to have tested it".
+Price sits inside a fixed percentage band in inverse proportion to how
+far it travels per session, so `support_test_count` and
+`resistance_test_count` were counting volatility as much as
+level-testing — and the bias reached three consumers, not one: Module
+10's ACCUMULATION predicate, target-model-v1's pattern quality, and
+Module 11's similarity distance, which carries both counts among its 41
+metric features. Now `level_test_atr` (0.25) multiplied by the security's
+own 20-session ATR, which was already in scope at that line.
+
+One consequence, accepted deliberately: ATR is a rolling mean, so the two
+counts are now unavailable for the first sessions of a series where a
+percentage band produced a number. `.where(measurable)` masks them rather
+than letting `NaN <= NaN` evaluate to `False` and enter the rolling sum
+as a measured zero.
+
+**`expansion_floor` / `breakdown_floor` (Module 15).** Flat 3% and -15%
+separating false-positive types B, C and D. Same flaw as E5's criterion,
+in the classification Module 17 reads most closely. Now
+`expansion_atr_multiple` (0.45) and `breakdown_atr_multiple` (-2.25),
+resolved against `Excursion.atr_fraction`.
+
+**Units and magnitudes were changed separately, on purpose.** Both
+multiples are constant-ratio translations of the percentages they
+replace — `0.03/0.10 × 1.5 = 0.45` and `0.15/0.05 × 0.75 = 2.25` — so the
+change moved no boundary, only the unit each boundary is expressed in.
+A second opinion proposed 0.8 and 3.0 instead; those are ~1.8× and ~1.3×
+looser than the existing geometry, which would have folded a substantive
+recalibration into a units fix and made the first outcome distribution
+computed afterwards uninterpretable — no one could have said whether a
+shift came from the normalization or from the new numbers.
+`tests/unit/outcome_tracking/test_classification.py` asserts the
+equivalence directly, and every pre-existing classification test passed
+with no fixture value changed, which is the evidence that the translation
+was neutral.
+
+None of `0.25`, `0.45` or `-2.25` is validated. They are starting points
+with the correct *form*; choosing their magnitudes needs outcome data
+that does not exist until a scan runs.
+
+**Two proposals from the same second opinion were declined as premature.**
+A new "live base vs dead base" quality component: all four of its
+proposed sub-signals already exist as Module 08 features
+(`volatility_compression`, `volume_contraction`, `higher_low_development`
+plus the test counts, `time_in_upper_range`), and target-model-v1 already
+combines four phase components at equal weights — so the request is to
+*reweight* existing signals, which needs the outcome data nobody has yet,
+and its premise (that ARGUS passes many dead bases) is untested because
+no scan has run. Rebalancing Module 11's similarity weights: there are no
+weights. `distance.py` is uniformly-weighted scaled-Euclidean over 41
+features, so "rebalancing" means introducing a 41-dimensional vector of
+new unvalidated parameters — the opposite of the principle that motivated
+the request, and precisely what a fitted model should learn instead.
 
 ---
 
@@ -529,7 +591,7 @@ one might not.
 | HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6 |
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were

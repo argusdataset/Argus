@@ -55,7 +55,7 @@ def test_changing_any_window_changes_the_checksum():
 
 
 def test_changing_a_tolerance_changes_the_checksum():
-    altered = FeatureSpec(tolerances=FeatureTolerances(level_test=0.02))
+    altered = FeatureSpec(tolerances=FeatureTolerances(level_test_atr=0.35))
     assert altered.content_checksum() != FeatureSpec().content_checksum()
 
 

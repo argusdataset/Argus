@@ -36,6 +36,19 @@ def window(*, entry: datetime = ENTRY, ends: datetime = TERMINAL) -> OutcomeWind
     )
 
 
+#: Entry price and entry ATR for the constructed excursions.
+#:
+#: The ATR is `ENTRY_PRICE / 15`, which is not arbitrary: it makes
+#: `atr_fraction` exactly 1/15, and at that fraction the two ATR-multiple
+#: CASE floors land exactly on the flat percentages they replaced —
+#: `0.45 / 15 = 0.03` and `-2.25 / 15 = -0.15`. So every classification
+#: test below goes on testing the same boundaries it always tested, which
+#: is the point: re-expressing those floors in ATR moved nothing, and a
+#: fixture that had to be re-tuned would have been evidence it did.
+ENTRY_PRICE = 100.0
+ENTRY_ATR = ENTRY_PRICE / 15.0
+
+
 def excursion(
     *,
     mfe: float | None = 0.12,
@@ -44,6 +57,7 @@ def excursion(
     target_day: int | None = 20,
     stop_day: int | None = None,
     mfe_day: int | None = 20,
+    atr_at_entry: float | None = ENTRY_ATR,
     unavailable: tuple[str, ...] = (),
     measured: bool = True,
 ) -> Excursion:
@@ -52,8 +66,9 @@ def excursion(
         return Excursion(window=window(), unavailable=unavailable or ("no_bars_in_window",))
     return Excursion(
         window=window(),
-        entry_price=100.0,
-        exit_price=100.0 * (1.0 + (realized or 0.0)),
+        entry_price=ENTRY_PRICE,
+        exit_price=ENTRY_PRICE * (1.0 + (realized or 0.0)),
+        atr_at_entry=atr_at_entry,
         mfe=mfe,
         mae=mae,
         time_to_mfe=None if mfe_day is None else timedelta(days=mfe_day),

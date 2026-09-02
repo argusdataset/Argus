@@ -114,9 +114,9 @@ leave Module 17 blind to the most common way this pattern disappoints.
 | | Meaning | Evidence | Confidence |
 |---|---|---|---|
 | A | No real pattern | Never activated | `inferred` |
-| B | Pattern, no expansion | MFE under the expansion floor | `weak` |
-| C | False breakout | MFE over the floor, then failed | `inferred` |
-| D | Breakdown | Realized return past the breakdown floor | `inferred` |
+| B | Pattern, no expansion | MFE under 0.45x the entry ATR | `weak` |
+| C | False breakout | MFE over that floor, then failed | `inferred` |
+| D | Breakdown | Realized return past -2.25x the entry ATR | `inferred` |
 | E | Catalyst-driven | Scheduled binary event within days of the peak excursion | `coincident` |
 | F | Illiquid distortion | Dollar volume under the floor at detection | `inferred` |
 | G | Corporate-action distortion | Action effective inside the window | `coincident` |
@@ -136,6 +136,22 @@ threshold-separated regions of one continuous space, so a setup just
 either side of the expansion floor gets different labels for a difference
 the data may not support. The taxonomy is a starting point for human
 review, not a finding.
+
+**B, C and D scale with the security's own volatility.** Their floors were
+flat percentages — 3% and -15% — until an audit found they carried the
+same flaw the success criterion had: a 3% peak is noise for one security
+and a real advance for another, so the taxonomy graded "did this move at
+all" on a scale that meant something different for every name. They are
+now multiples of the entry ATR, resolved per setup against
+`Excursion.atr_fraction`.
+
+The multiples are constant-ratio translations of the percentages they
+replaced (`0.03/0.10 x 1.5 = 0.45`, `0.15/0.05 x 0.75 = 2.25`), so the
+change moved no boundary — only the unit each boundary is written in.
+Recalibrating the magnitudes is a separate decision that needs outcome
+data. A setup whose entry ATR could not be measured gets **no** type
+rather than defaulting to B: without a volatility scale, "went nowhere"
+is not a judgement anything supports.
 
 ## `review_confidence` policy for automated cases
 

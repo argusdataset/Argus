@@ -178,6 +178,76 @@ def test_type_d_is_a_base_that_broke_down():
     assert result.false_positive_type is FalsePositiveType.D_BREAKDOWN
 
 
+# --------------------------------------------------------------------------
+# The B/C/D boundaries scale with the security's own volatility
+# --------------------------------------------------------------------------
+
+
+def test_the_same_excursion_is_typed_differently_by_volatility():
+    """The flaw this normalization fixes, made concrete.
+
+    An identical 8% peak excursion is a real advance for a security whose
+    session covers a fraction of a percent, and unremarkable noise for one
+    that routinely swings 25%. Under a flat floor both were type C.
+    """
+    quiet = _classify(target_day=None, stop_day=10, mfe=0.08, realized=-0.01, atr_at_entry=1.0)
+    volatile = _classify(target_day=None, stop_day=10, mfe=0.08, realized=-0.01, atr_at_entry=25.0)
+
+    # Floors are 0.45x and -2.25x of ATR/entry_price, on entry_price=100:
+    #   quiet    -> expansion floor 0.0045, so 8% cleared it
+    #   volatile -> expansion floor 0.1125, so 8% did not
+    # The realized return stays inside both breakdown floors, so type D
+    # (checked first) does not pre-empt the comparison under test.
+    assert quiet.false_positive_type is FalsePositiveType.C_FALSE_BREAKOUT
+    assert volatile.false_positive_type is FalsePositiveType.B_PATTERN_NO_EXPANSION
+
+
+def test_the_breakdown_floor_scales_too():
+    """A 30% fall is a collapse for a stable name and an ordinary week for
+    a violent one. Only the first is a type D."""
+    quiet = _classify(target_day=None, stop_day=5, mfe=0.01, realized=-0.30, atr_at_entry=5.0)
+    volatile = _classify(target_day=None, stop_day=5, mfe=0.01, realized=-0.30, atr_at_entry=20.0)
+
+    # Breakdown floors: -0.1125 for the quiet name, -0.45 for the volatile one.
+    assert quiet.false_positive_type is FalsePositiveType.D_BREAKDOWN
+    assert volatile.false_positive_type is not FalsePositiveType.D_BREAKDOWN
+
+
+def test_the_atr_multiples_reproduce_the_flat_floors_they_replaced():
+    """The translation moved no boundary — asserted, not assumed.
+
+    At the fixture's entry ATR the two multiples resolve to exactly the
+    0.03 and -0.15 that used to be written as flat percentages. That is
+    what makes every other test in this file still test what it tested
+    before the units changed.
+    """
+    fraction = make.ENTRY_ATR / make.ENTRY_PRICE
+
+    assert THRESHOLDS.expansion_atr_multiple.value * fraction == pytest.approx(0.03)
+    assert THRESHOLDS.breakdown_atr_multiple.value * fraction == pytest.approx(-0.15)
+
+
+def test_without_an_entry_atr_no_type_is_asserted():
+    """No volatility scale means "did this move at all" has no answer.
+
+    Defaulting to type B would assert the structure went nowhere on the
+    strength of a measurement that does not exist. The row is left
+    unclassified and says why, and review confidence drops to LOW.
+    """
+    result = _classify(
+        target_day=None,
+        stop_day=None,
+        mfe=0.01,
+        realized=0.0,
+        atr_at_entry=None,
+        unavailable=("no_atr_at_entry",),
+    )
+
+    assert result.false_positive_type is None
+    assert "entry ATR was not measurable" in result.false_positive_reason
+    assert result.review_confidence is ReviewConfidence.LOW
+
+
 def test_type_e_is_a_move_that_coincided_with_a_scheduled_event():
     """The fixture the brief asks for by name: a coincident earnings date
     classifies as E rather than being left ambiguous."""

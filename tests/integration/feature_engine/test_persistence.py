@@ -122,7 +122,7 @@ def test_the_stored_definition_is_enough_to_rebuild_the_spec(connection: Connect
     ).scalar_one()
 
     assert definition["windows"]["structural"] == spec.windows.structural
-    assert definition["tolerances"]["level_test"] == spec.tolerances.level_test
+    assert definition["tolerances"]["level_test_atr"] == spec.tolerances.level_test_atr
     assert definition["trading_periods_per_year"] == spec.trading_periods_per_year
     assert len(definition["feature_names"]) == 50
 

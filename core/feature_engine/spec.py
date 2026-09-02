@@ -86,14 +86,47 @@ class FeatureWindows:
 class FeatureTolerances:
     """Proportional tolerances. Also scales, not duration gates.
 
-    These are fractions of price, not counts of days — a level "tested"
-    within 1.5% is the same judgement whether the base lasted a month or
-    a decade.
+    These are counts of nothing — no days, and (since the level-test band
+    became volatility-relative) no fixed fraction of price either. Each is
+    expressed against something the security itself supplies: its own ATR,
+    or its own range height.
+
+    ## Why the level-test band is measured in ATR, not in percent
+
+    It was `0.015` — a flat 1.5% of price — and that was the same class of
+    flaw as Module 15's old flat outcome criterion. Price spends time
+    within a fixed 1.5% band in inverse proportion to how much the
+    security moves: a quiet large-cap hovers inside it for weeks, while a
+    security whose ordinary session covers 8% crosses it and keeps going.
+    `support_test_count` and `resistance_test_count` therefore counted
+    *volatility* as much as they counted level-testing, and three
+    downstream consumers inherited the bias — Module 10's ACCUMULATION
+    predicate (`accumulation_support_tests`), target-model-v1's
+    pattern-quality assessment, and Module 11's similarity distance, which
+    carries both counts among its metric features.
+
+    Measured in ATR, "price came close enough to this level for the touch
+    to mean something" asks the same question of every security.
+
+    One consequence worth stating: ATR is a rolling mean, so it is
+    undefined for the first `windows.medium` bars of a series. The two
+    test counts are therefore unavailable for a security that short, where
+    a percentage band would have produced a number. That is the honest
+    answer — a touch cannot be judged meaningful against a range nobody
+    has measured yet — but it does mean very newly-listed securities carry
+    two fewer features into Module 09's completeness gate.
     """
 
-    #: How close to a level counts as testing it.
-    level_test: float = 0.015
+    #: How close to a level counts as testing it, as a multiple of the
+    #: security's own 20-session ATR. **Unvalidated.** 0.25 is a starting
+    #: point chosen so the band is neither so tight that nothing registers
+    #: as a test nor so loose that any pass counts as one; it has not been
+    #: measured against outcomes, and choosing it properly means comparing
+    #: `support_test_count` distributions and their relationship to
+    #: subsequent expansion across several candidate values.
+    level_test_atr: float = 0.25
     #: Fraction of a range's height counted as its "upper" portion.
+    #: Relative to the range itself, so it is already scale-free.
     upper_range: float = 0.25
 
 

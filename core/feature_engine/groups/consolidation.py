@@ -68,8 +68,22 @@ def compute(
 
     # How often price returned to the edges of its range. A well-tested
     # level is a more meaningful level.
-    near_support = (low - range_low).abs() <= (close * tolerances.level_test)
-    near_resistance = (high - range_high).abs() <= (close * tolerances.level_test)
+    #
+    # The band is a multiple of this security's own ATR, not a fixed
+    # fraction of price: a flat band counts volatility as much as it
+    # counts level-testing, because price sits inside a fixed percentage
+    # window in inverse proportion to how far it travels per session. See
+    # `FeatureTolerances` in `spec.py`.
+    # `.where(measurable)` is load-bearing, not defensive. ATR is a
+    # rolling mean, so it is NaN until the window fills — and `NaN <= NaN`
+    # is `False`, not NaN. Without the mask those early bars would enter
+    # the count as measured non-tests, which is a fabricated zero standing
+    # in for an absent measurement: exactly what Module 08 refuses to do
+    # everywhere else.
+    level_band = average_true_range * tolerances.level_test_atr
+    measurable = level_band.notna()
+    near_support = ((low - range_low).abs() <= level_band).where(measurable)
+    near_resistance = ((high - range_high).abs() <= level_band).where(measurable)
     features["support_test_count"] = near_support.astype(float).rolling(windows.medium).sum()
     features["resistance_test_count"] = near_resistance.astype(float).rolling(windows.medium).sum()
 

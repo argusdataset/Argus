@@ -152,6 +152,21 @@ class Excursion:
     def criterion_resolved(self) -> bool:
         return self.target_hit_at is not None or self.stop_hit_at is not None
 
+    @property
+    def atr_fraction(self) -> float | None:
+        """Entry ATR as a fraction of entry price, or None if unmeasured.
+
+        The unit every volatility-relative threshold in this module is
+        expressed against — the criterion's own target and stop, and the
+        CASE heuristics that separate the false-positive types. Defined
+        once, here, so `classification.py` compares against the same
+        quantity `measure()` used rather than recomputing a division that
+        could drift from it.
+        """
+        if self.atr_at_entry is None or not self.entry_price:
+            return None
+        return self.atr_at_entry / self.entry_price
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "window": self.window.as_dict() if self.window else None,

@@ -40,6 +40,33 @@ redoing entirely, not adjusting — every stored outcome cites the
 criterion that labelled it, and there is no partial migration from one
 success definition to another.
 
+The same normalization then applied to the two CASE heuristics that
+separate the false-positive types — `expansion_atr_multiple` (type B
+from C) and `breakdown_atr_multiple` (type D) — because a taxonomy that
+graded "did it move at all" on a flat percentage would have kept the
+exact flaw the criterion above just shed, in the classification Module 17
+reads most closely.
+
+## Changing units and changing magnitudes are two separate decisions
+
+Both multiples above are **constant-ratio translations** of the flat
+percentages they replace, not new judgements:
+
+    expansion:  0.03 / 0.10  = 0.30  ->  0.30 x 1.5  ATR = 0.45
+    breakdown:  0.15 / 0.05  = 3.0   ->  3.0  x 0.75 ATR = 2.25
+
+So this change moved no boundary. It re-expressed each boundary in a unit
+that means the same thing for a quiet large-cap and a volatile microcap,
+and left the geometry exactly where it was.
+
+That separation is deliberate and worth keeping. Had the units and the
+magnitudes moved together, the first outcome distribution computed
+afterwards would have been uninterpretable: no one could say whether a
+shift came from the normalization or from the new numbers. Recalibrating
+these multiples against real outcomes is the next decision, and it should
+arrive on its own, as its own snapshot, with its effect attributable to
+itself.
+
 ## Unvalidated, like everything else
 
 The numbers in the criterion are invented. 1.5 and 0.75 are a plausible
@@ -142,23 +169,32 @@ class OutcomeThresholds:
     )
 
     # -- CASE classification heuristics --------------------------------------
-    expansion_floor: OutcomeThreshold = field(
+    expansion_atr_multiple: OutcomeThreshold = field(
         default_factory=lambda: _t(
-            0.03,
+            0.45,
             CALIBRATABLE,
             "Favourable excursion below which a setup is judged to have "
             "gone nowhere at all — false-positive type B, pattern without "
             "expansion. Distinguishes 'never moved' from 'moved and "
-            "failed', which are different lessons.",
+            "failed', which are different lessons, and needs the same "
+            "volatility normalization the criterion itself needed: a 3% "
+            "peak is noise for one security and a real advance for "
+            "another. 0.45 is the constant-ratio translation of the flat "
+            "3% it replaces (0.03 / 0.10 target = 0.30, times the 1.5 ATR "
+            "target), so switching units moved no boundary. Recalibrating "
+            "it is a separate, later decision — see the module docstring.",
         )
     )
-    breakdown_floor: OutcomeThreshold = field(
+    breakdown_atr_multiple: OutcomeThreshold = field(
         default_factory=lambda: _t(
-            -0.15,
+            -2.25,
             CALIBRATABLE,
             "Realized return below which the base is judged to have broken "
             "down rather than merely failed — type D. Well past the stop, "
-            "so an ordinary stop-out is not miscounted as a collapse.",
+            "so an ordinary stop-out is not miscounted as a collapse. "
+            "-2.25 is the constant-ratio translation of the flat -15% it "
+            "replaces (0.15 / 0.05 stop = 3.0, times the 0.75 ATR stop), "
+            "so switching units moved no boundary here either.",
         )
     )
     illiquid_dollar_volume: OutcomeThreshold = field(
