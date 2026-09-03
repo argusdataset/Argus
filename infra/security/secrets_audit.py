@@ -89,6 +89,13 @@ _ALLOWED_VALUES = frozenset(
         "x-argus-user",
         "authorization",
         "argus-timing-equaliser-not-a-credential",
+        # Module 27's two secret *keys* and the header name Telegram
+        # echoes its value back in — the same case as `fmp_api_key`
+        # above: the string is what `SecretsProvider` is asked for, not
+        # what it answers with.
+        "telegram_bot_token",
+        "telegram_webhook_secret",
+        "x-telegram-bot-api-secret-token",
     }
 )
 

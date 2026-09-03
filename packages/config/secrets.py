@@ -19,7 +19,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from packages.config.settings import AppConfig, get_config
+from packages.config.settings import AppConfig, SecretsSettings, get_config
 
 
 class SecretNotFoundError(KeyError):
@@ -119,6 +119,34 @@ class ChainedSecretsProvider(SecretsProvider):
     def __repr__(self) -> str:
         inner = ", ".join(repr(provider) for provider in self._providers)
         return f"ChainedSecretsProvider([{inner}])"
+
+
+def bootstrap_secrets_provider() -> SecretsProvider:
+    """A provider that works before `AppConfig` is known to be loadable.
+
+    `get_secrets_provider` reads `cfg.secrets.dotenv_path`, so it needs a
+    valid `AppConfig` — and a deployment supplying only `DATABASE_URL`
+    does not have one, because `AppConfig.database` is required and a
+    connection string satisfies none of its discrete fields. That is not
+    hypothetical: `infra/db/connection.py` records it as exactly how
+    ARGUS's first Railway deploy crashed, and every deployed service
+    still runs with `DATABASE_URL` and nothing else.
+
+    So a caller that needs a secret *before* it can be sure the config
+    loads uses this: the default chain (`.env`, then the process
+    environment) with the default dotenv path, which is what
+    `get_secrets_provider` would have produced anyway in every deployment
+    that has not overridden `ARGUS_SECRETS__DOTENV_PATH`.
+
+    Prefer `get_secrets_provider` wherever a config is already in hand.
+    This exists for the ordering problem, not as a shortcut around it.
+    """
+    try:
+        return get_secrets_provider()
+    except Exception:  # noqa: BLE001 - any config failure means "fall back"
+        return ChainedSecretsProvider(
+            [DotEnvSecretsProvider(SecretsSettings().dotenv_path), EnvironmentSecretsProvider()]
+        )
 
 
 def get_secrets_provider(config: AppConfig | None = None) -> SecretsProvider:

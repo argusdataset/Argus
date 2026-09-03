@@ -276,7 +276,12 @@ def test_an_incomplete_config_with_no_url_still_raises_the_original_error(monkey
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv(DATABASE_URL_SECRET, raising=False)
     monkeypatch.setattr(
-        "infra.db.connection.SecretsSettings",
+        # The dotenv fallback moved into `bootstrap_secrets_provider`
+        # (Module 27 needed the same ordering workaround and a second
+        # private copy was the wrong answer), so the patch target moved
+        # with it. The intent is unchanged: stop a developer's real
+        # `.env` from supplying the URL this test is proving is absent.
+        "packages.config.secrets.SecretsSettings",
         lambda: type("S", (), {"dotenv_path": "/nonexistent"})(),
     )
     get_config.cache_clear()
@@ -306,7 +311,12 @@ def test_the_error_names_the_missing_fields_when_the_config_is_half_set(monkeypa
     monkeypatch.setenv("ARGUS_DATABASE__HOST", "localhost")
     monkeypatch.delenv(DATABASE_URL_SECRET, raising=False)
     monkeypatch.setattr(
-        "infra.db.connection.SecretsSettings",
+        # The dotenv fallback moved into `bootstrap_secrets_provider`
+        # (Module 27 needed the same ordering workaround and a second
+        # private copy was the wrong answer), so the patch target moved
+        # with it. The intent is unchanged: stop a developer's real
+        # `.env` from supplying the URL this test is proving is absent.
+        "packages.config.secrets.SecretsSettings",
         lambda: type("S", (), {"dotenv_path": "/nonexistent"})(),
     )
     get_config.cache_clear()

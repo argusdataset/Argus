@@ -17,6 +17,7 @@ from packages.config.secrets import (
     EnvironmentSecretsProvider,
     SecretNotFoundError,
     SecretsProvider,
+    bootstrap_secrets_provider,
     get_secrets_provider,
 )
 from packages.config.settings import AppConfig, get_config
@@ -31,5 +32,6 @@ __all__ = [
     "SecretNotFoundError",
     "SecretsProvider",
     "get_config",
+    "bootstrap_secrets_provider",
     "get_secrets_provider",
 ]

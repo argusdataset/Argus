@@ -15,10 +15,14 @@ predicate a second time here would be a second place for it to be wrong.
 
 `MembershipAsOf` carries `security_id` and no ticker, which is the whole
 point of Module 05's identity discipline: nothing in ARGUS references a
-security by ticker. But the provider only speaks tickers, so exactly one
-place has to translate, and this is it — `security_ticker_history`, at
-the same `as_of` the membership was read at, so a ticker change resolves
-to the holder on that date rather than to today's.
+security by ticker. But the provider only speaks tickers, so somewhere
+has to translate, at the same `as_of` the membership was read at, so a
+ticker change resolves to the holder on that date rather than to today's.
+
+That translation used to be a private query here. It is now Module 07's
+`tickers_as_of` — the same predicate three other places had also written
+out privately. See `core/data_validation/identity.py` on why it moved
+and which copies remain.
 
 A member with no ticker valid at `as_of` is *reported*, not skipped
 silently: it means a universe member ARGUS cannot fetch prices for, and
@@ -47,13 +51,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from core.data_validation.identity import tickers_as_of
 from core.data_validation.universe import list_universe_members_as_of
 from data.canonical_model.records import CanonicalTimeframe
 from infra.db.schema.canonical import canonical_ohlcv
-from infra.db.schema.identity import security_ticker_history
 
 __all__ = ["MemberSet", "UniverseMember", "securities_with_bars_on", "universe_members"]
 
@@ -99,7 +103,7 @@ def universe_members(
         return MemberSet(members=(), unresolved=())
 
     identities = [membership.security_id for membership in memberships]
-    tickers = _tickers_for(connection, identities, as_of)
+    tickers = tickers_as_of(connection, identities, as_of=as_of)
 
     members: list[UniverseMember] = []
     unresolved: list[UUID] = []
@@ -146,25 +150,3 @@ def securities_with_bars_on(
         .distinct()
     ).scalars()
     return set(rows)
-
-
-def _tickers_for(
-    connection: Connection,
-    security_ids: list[UUID],
-    as_of: datetime,
-) -> dict[UUID, str]:
-    """The ticker each identity traded under at `as_of`.
-
-    One row per security by construction: `security_ticker_history`
-    carries a gist exclusion constraint forbidding two overlapping
-    validity windows for one security, so this cannot return two.
-    """
-    history = security_ticker_history
-    rows = connection.execute(
-        select(history.c.security_id, history.c.ticker).where(
-            history.c.security_id.in_(security_ids),
-            history.c.valid_from <= as_of,
-            or_(history.c.valid_to.is_(None), history.c.valid_to > as_of),
-        )
-    ).all()
-    return {row.security_id: row.ticker for row in rows}

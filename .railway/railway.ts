@@ -7,10 +7,10 @@
 // for four settings ARGUS needs, which are set on the Railway
 // services themselves — see dashboard_settings() in
 // infra/deploy/railway.py for the exact values:
-//   - dockerfile: terminal, public_stats, intelligence, identity, health, ingestion, scanner, retention
+//   - dockerfile: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention
 //   - preDeployCommand: identity
-//   - cronSchedule: ingestion, scanner, retention
-//   - restartPolicy: terminal, public_stats, intelligence, identity, health, ingestion, scanner, retention
+//   - cronSchedule: ingestion, scanner, telegram_dispatch, retention
+//   - restartPolicy: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention
 //
 // Secrets appear here as names bound to preserve(), never as values.
 // preserve() keeps what Railway already holds; it cannot create a
@@ -90,6 +90,21 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Module 27. The bot's webhook: /start and /stop, nothing else. Holds no bot token — see services/telegram/app.py.
+  const telegram = service("telegram", {
+    source: github("argusdataset/Argus", { branch: "main" }),
+    start: "uvicorn infra.deploy.asgi:telegram_app --factory --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-1} --no-access-log",
+    healthcheck: "/health/live",
+    healthcheckTimeout: 120,
+    replicas: 1,
+    env: {
+      ARGUS_ENV: prod ? "production" : "staging",
+      DATABASE_URL: db.env.DATABASE_URL,
+      WEB_CONCURRENCY: "1",
+      TELEGRAM_WEBHOOK_SECRET: preserve(),
+    },
+  });
+
   // Modules 23/24. Public liveness plus the admin-gated detailed view. Its own liveness path is the one Railway polls.
   const health = service("health", {
     source: github("argusdataset/Argus", { branch: "main" }),
@@ -128,6 +143,17 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Module 27. One message per subscriber per BREAKOUT_READY transition.
+  const telegram_dispatch = service("telegram_dispatch", {
+    source: github("argusdataset/Argus", { branch: "main" }),
+    start: "python -m infra.deploy.telegram_dispatch",
+    env: {
+      ARGUS_ENV: prod ? "production" : "staging",
+      DATABASE_URL: db.env.DATABASE_URL,
+      TELEGRAM_BOT_TOKEN: preserve(),
+    },
+  });
+
   // Module 25. Prunes expired sessions; measures append-only growth.
   const retention = service("retention", {
     source: github("argusdataset/Argus", { branch: "main" }),
@@ -139,6 +165,6 @@ export default defineRailway((ctx) => {
   });
 
   return project("passionate-unity", {
-    resources: [db, terminal, public_stats, intelligence, identityService, health, ingestion, scanner, retention],
+    resources: [db, terminal, public_stats, intelligence, identityService, telegram, health, ingestion, scanner, telegram_dispatch, retention],
   });
 });

@@ -1,7 +1,7 @@
 """What each deployable process actually runs. One definition, several consumers.
 
 Railway's configuration, the Dockerfile's default command, this module's
-README and the tests that check them all describe the same eight
+README and the tests that check them all describe the same ten
 processes. Written four times they drift; written once and read four
 times they cannot. `PROCESSES` is that once.
 
@@ -37,14 +37,21 @@ job's is its exit code plus the readiness report it logs, which is the
 scanner's own coverage question asked an hour early. A process-level
 probe on any of them would answer a question nobody is asking.
 
-## Ordering between the two weekday crons
+## Ordering between the weekday crons
 
-`ingestion` at 21:00 UTC and `scanner` at 22:30 UTC are not independent.
-The scanner refuses to scan a session whose OHLCV coverage is short, and
-`ingestion` is what delivers it — so the ninety minutes between them is a
-deadline, not a gap. Railway has no notion of one cron depending on
-another, so the dependency lives in the schedules and is stated in both
-files rather than being inferable from neither.
+`ingestion` (21:00 UTC), `scanner` (22:30) and `telegram_dispatch`
+(23:00) are a chain, not three independent jobs. The scanner refuses to
+scan a session whose OHLCV coverage is short and `ingestion` is what
+delivers it; the dispatch reads the state transitions the scan records.
+So the gaps between them are deadlines. Railway has no notion of one cron
+depending on another, so the dependency lives in the schedules and is
+stated in each file rather than being inferable from none of them.
+
+The two deadlines are not equally hard. A scan that runs before ingestion
+finished loses the day. A dispatch that runs before the scan finished
+sends nothing and costs one evening's alerts — and does not catch up
+later, deliberately: an alert about a two-day-old state change is worse
+than no alert. See `services/telegram/dispatch.py`.
 """
 
 from __future__ import annotations
@@ -143,6 +150,16 @@ PROCESSES: dict[str, ProcessDefinition] = {
         health_path="/health/live",
         description="Module 22. The only service that issues credentials.",
     ),
+    "telegram": ProcessDefinition(
+        name="telegram",
+        kind="web",
+        asgi_factory="telegram_app",
+        health_path="/health/live",
+        description=(
+            "Module 27. The bot's webhook: /start and /stop, nothing else. "
+            "Holds no bot token — see services/telegram/app.py."
+        ),
+    ),
     "health": ProcessDefinition(
         name="health",
         kind="web",
@@ -179,6 +196,18 @@ PROCESSES: dict[str, ProcessDefinition] = {
         # that finds nothing ready is harmless and the next one retries.
         schedule="30 22 * * 1-5",
         description="Module 18. One catch-up scan per weekday evening.",
+    ),
+    "telegram_dispatch": ProcessDefinition(
+        name="telegram_dispatch",
+        kind="cron",
+        module="infra.deploy.telegram_dispatch",
+        # 23:00 UTC on weekdays, thirty minutes after the scanner. The
+        # scanner's worst case is four attempts with exponential backoff
+        # plus the scan itself, so thirty minutes covers a bad evening.
+        # Not longer, because an alert's value is that it is fresh —
+        # 23:00 UTC is early evening in the Americas.
+        schedule="0 23 * * 1-5",
+        description=("Module 27. One message per subscriber per BREAKOUT_READY transition."),
     ),
     "retention": ProcessDefinition(
         name="retention",

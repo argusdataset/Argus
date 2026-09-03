@@ -36,6 +36,22 @@ DEVELOPER_ONLY = (
 
 WEB = sorted(name for name, process in PROCESSES.items() if process.is_web)
 
+#: Production prerequisites beyond the connection string, per service.
+#:
+#: There is exactly one, and it is deliberate rather than an oversight:
+#: Module 27's webhook is a public endpoint that subscribes and
+#: unsubscribes Telegram chats, and the secret token Telegram echoes back
+#: is the only thing separating a real delivery from a forged one. So the
+#: service refuses to boot in production without it, and this map is that
+#: refusal written down where the deployment tests can see it.
+#:
+#: An entry here is a cost — one more variable an operator must set
+#: before a deploy works — so adding one should need the argument this
+#: one has.
+EXTRA_PRODUCTION_SECRETS: dict[str, dict[str, str]] = {
+    "telegram": {"TELEGRAM_WEBHOOK_SECRET": "platform-test-webhook-secret"},
+}
+
 
 @pytest.fixture
 def platform(fresh_database: URL, monkeypatch, tmp_path) -> Iterator[URL]:
@@ -68,11 +84,18 @@ def test_the_pre_deploy_migration_runs_with_only_a_connection_string(platform: U
 
 
 @pytest.mark.parametrize("name", WEB)
-def test_every_service_boots_with_only_a_connection_string(platform: URL, name: str):
+def test_every_service_boots_with_only_a_connection_string(platform: URL, name: str, monkeypatch):
     """Step 3, and the one that actually crashed.
 
     `uvicorn infra.deploy.asgi:<factory> --factory` calls exactly this.
+
+    `EXTRA_PRODUCTION_SECRETS` supplies the one service that legitimately
+    needs a second variable. It is granted here rather than added to the
+    `platform` fixture so that it stays visible: the very next test
+    proves the same service refuses to boot without it.
     """
+    for key, value in EXTRA_PRODUCTION_SECRETS.get(name, {}).items():
+        monkeypatch.setenv(key, value)
     migrate.main([])
 
     factory = getattr(asgi, PROCESSES[name].asgi_factory)
@@ -81,6 +104,27 @@ def test_every_service_boots_with_only_a_connection_string(platform: URL, name: 
 
     assert response.status_code == 200
     assert response.json() == {"status": "up"}
+
+
+@pytest.mark.parametrize("name", sorted(EXTRA_PRODUCTION_SECRETS))
+def test_a_service_with_an_extra_prerequisite_refuses_to_boot_without_it(
+    platform: URL, name: str, monkeypatch
+):
+    """The other half of the map above, and the more important half.
+
+    A public endpoint that authenticates when configured and accepts
+    everything when not is one missing variable away from being open, and
+    the missing variable is invisible until somebody finds the URL. So
+    the failure is a refusal at startup, in the environment that matters
+    — `ARGUS_ENV=production`, set by the `platform` fixture.
+    """
+    migrate.main([])
+    for key in EXTRA_PRODUCTION_SECRETS[name]:
+        monkeypatch.delenv(key, raising=False)
+
+    factory = getattr(asgi, PROCESSES[name].asgi_factory)
+    with pytest.raises(Exception, match="|".join(EXTRA_PRODUCTION_SECRETS[name])):
+        factory()
 
 
 def test_a_plaintext_request_is_still_redirected_in_production(platform: URL):

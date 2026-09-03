@@ -8,7 +8,7 @@ it. That is the gap this file closes: an importable, uvicorn-addressable
 `app` per service, with the engine constructed from configuration and the
 deployment profile applied.
 
-## Why four apps and not one
+## Why several apps and not one
 
 Each service could be mounted under a prefix on a single app. They are
 kept separate because they have genuinely different exposure: Public
@@ -90,6 +90,7 @@ __all__ = [
     "identity_app",
     "intelligence_app",
     "public_stats_app",
+    "telegram_app",
     "terminal_app",
 ]
 
@@ -173,6 +174,12 @@ def _identity(engine: Engine, *, security: Any) -> FastAPI:
     return create_app(engine, security=security)
 
 
+def _telegram(engine: Engine, *, security: Any) -> FastAPI:
+    from services.telegram.app import create_app
+
+    return create_app(engine, security=security)
+
+
 def _health(engine: Engine, *, security: Any) -> FastAPI:
     return create_health_app(engine, security=security)
 
@@ -186,6 +193,7 @@ SERVICES: dict[str, Any] = {
     "public_stats": _public_stats,
     "intelligence": _intelligence,
     "identity": _identity,
+    "telegram": _telegram,
     "health": _health,
 }
 
@@ -297,6 +305,10 @@ def intelligence_app() -> Any:
 
 def identity_app() -> Any:
     return _module_app("identity")
+
+
+def telegram_app() -> Any:
+    return _module_app("telegram")
 
 
 def health_app() -> Any:

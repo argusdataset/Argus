@@ -619,6 +619,12 @@ and *demonstrated* rather than applied:
 arithmetic, pins the failure, and shows the change working against real
 ingested rows.
 
+**A second consequence, added by Module 27.** The Telegram bot alerts on
+`BREAKOUT_READY` transitions, and transitions are written by the scan. A
+scanner that records `DATA_NOT_READY` records no transitions, so the bot
+has nothing to send and goes quiet with nothing failing. Fixing this one
+number is what turns Modules 18, 26 and 27 on together.
+
 **A second observation, smaller but related.** `scan_offset_hours` is
 tagged `operational`, whose stated meaning is "bounds how the computation
 runs, never what it produces", justified in Module 18's config by "a scan
@@ -652,11 +658,60 @@ as the deep refresh.
 
 ---
 
+### G3. `get_config()` cannot be loaded in the deployed environment — **OPEN, HIGH**
+
+Every deployed service runs with `DATABASE_URL` and nothing else — that
+is what `.railway/railway.ts` sets, and it is deliberate: a platform
+injects a connection string, not four discrete fields. But
+`AppConfig.database` is a **required** field that a connection string
+satisfies none of, so `get_config()` raises a pydantic
+`ValidationError` in production.
+
+`infra/db/connection.py` already knows this. Its `_bootstrap_secrets`
+docstring records it as "exactly how ARGUS's first Railway deploy
+crashed", and it works around the ordering by falling back to a default
+secrets chain. What was missed is that the workaround is local to that
+one function, while **any other code path calling `get_config()` still
+crashes**.
+
+Reproduced, in the environment the deployment actually has:
+
+```
+$ env -i DATABASE_URL=... ARGUS_ENV=production python -c "
+      from data.provider_adapters.fmp.client import FmpClient; FmpClient()"
+ValidationError: 1 validation error for AppConfig
+database
+  Field required
+```
+
+**What this breaks today.** `FmpClient.__init__` calls
+`config or get_config()`, and Module 26's ingestion cron constructs one.
+So the ingestion job crashes on startup in production — but only *after*
+`ARGUS_UNIVERSE_VERSION` is set, because `resolve_universe_version`
+raises `ScannerNotReady` and exits 2 first. The failure is therefore
+latent precisely until the moment the job would otherwise start working.
+`core/ingestion/orchestrator.py`'s `run_daily_ingestion` has the same
+call when `app_config` is not supplied.
+
+**What is fixed.** Module 27 avoids it: `bootstrap_secrets_provider()`
+(`packages/config/secrets.py`) is the extracted, public, documented form
+of what `connection.py` was doing privately, and the telegram service
+uses it. `connection.py` now calls it instead of holding a second copy.
+
+**What is not.** Modules 04 and 26 still call `get_config()`. The
+narrow fix is for each to take the bootstrap path; the real fix is for
+`AppConfig` to accept `DATABASE_URL` as a source for `database`, which is
+a Module 02 contract change touching every service and was out of scope
+for an alerts bot. Either way this needs doing before the ingestion cron
+is deployed, or it will fail on its first real run.
+
+---
+
 ## Summary
 
 | Severity | Open | Deferred | Closed |
 |---|---|---|---|
-| HIGH | A1, A2 (Module 11 copy), C1, C3, G1, G2 | — | — |
+| HIGH | A1, A2 (Module 11 copy), C1, C3, G1, G2, G3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
 | — | — | — | C2, E1, E2, E3, E4, E5, E6 |

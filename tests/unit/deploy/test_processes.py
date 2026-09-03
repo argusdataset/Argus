@@ -18,12 +18,12 @@ from infra.deploy.processes import (
     start_command,
 )
 
-WEB_SERVICES = {"terminal", "public_stats", "intelligence", "identity", "health"}
-CRON_SERVICES = {"ingestion", "scanner", "retention"}
+WEB_SERVICES = {"terminal", "public_stats", "intelligence", "identity", "telegram", "health"}
+CRON_SERVICES = {"ingestion", "scanner", "telegram_dispatch", "retention"}
 
 
-def test_every_service_module_19_to_26_built_has_a_process():
-    """The four API services, the health service, and all three cron jobs.
+def test_every_service_module_19_to_27_built_has_a_process():
+    """The five API services, the health service, and all four cron jobs.
 
     Written as an equality rather than a series of `in` checks so that a
     service added without a process definition, or a definition left

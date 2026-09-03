@@ -47,21 +47,17 @@ for the case where the config really is incomplete.
 
 from __future__ import annotations
 
-from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL, make_url
 
 from packages.config import (
     AppConfig,
-    ChainedSecretsProvider,
-    DotEnvSecretsProvider,
-    EnvironmentSecretsProvider,
     SecretsProvider,
+    bootstrap_secrets_provider,
     get_config,
     get_secrets_provider,
 )
 from packages.config.secrets import SecretNotFoundError
-from packages.config.settings import SecretsSettings
 
 #: Key the database password is stored under in the secrets backend.
 DATABASE_PASSWORD_SECRET = "DATABASE_PASSWORD"
@@ -158,15 +154,7 @@ def _bootstrap_secrets(config: AppConfig | None) -> SecretsProvider:
     """
     if config is not None:
         return get_secrets_provider(config)
-    try:
-        return get_secrets_provider()
-    except ValidationError:
-        return ChainedSecretsProvider(
-            [
-                DotEnvSecretsProvider(SecretsSettings().dotenv_path),
-                EnvironmentSecretsProvider(),
-            ]
-        )
+    return bootstrap_secrets_provider()
 
 
 def _supplied_url(secrets: SecretsProvider) -> URL | None:

@@ -30,7 +30,7 @@ settings ARGUS depends on:
 | --------------------------- | -------------------- | ---------------------------- |
 | Dockerfile builder + path   | every service        | Railway service settings     |
 | `preDeployCommand`          | `identity`           | Railway service settings     |
-| `cronSchedule`              | `ingestion`, `scanner`, `retention` | Railway service settings |
+| `cronSchedule`              | `ingestion`, `scanner`, `telegram_dispatch`, `retention` | Railway service settings |
 | Restart policy + retries    | every service        | Railway service settings     |
 
 `UNSUPPORTED_BY_IAC` below is that table as data, and `dashboard_settings()`
@@ -49,7 +49,7 @@ Railway and is missing from the file is a service `railway config apply`
 offers to destroy. So `SERVICE_NAMES` uses the names the services actually
 carry on Railway today — including `"Identity "`, whose trailing space is a
 typo in the dashboard rather than in this file — and the managed Postgres is
-declared alongside the eight processes.
+declared alongside the ten processes.
 
 Never apply this file blind. `railway config plan` first, read every line
 marked destructive, and treat any unexpected delete as a bug in this
@@ -129,9 +129,11 @@ SERVICE_NAMES: dict[str, str] = {
     "public_stats": "Public_stats",
     "intelligence": "intelligence",
     "identity": "Identity ",
+    "telegram": "telegram",
     "health": "health",
     "ingestion": "ingestion",
     "scanner": "scanner",
+    "telegram_dispatch": "telegram_dispatch",
     "retention": "retention",
 }
 
@@ -144,9 +146,11 @@ SECRET_VARIABLES: dict[str, tuple[str, ...]] = {
     "public_stats": (),
     "intelligence": (),
     "identity": ("ARGUS_SECURITY__SESSION_SECRET", "ARGUS_SECURITY__MFA_ENCRYPTION_KEY"),
+    "telegram": ("TELEGRAM_WEBHOOK_SECRET",),
     "health": (),
     "ingestion": ("FMP_API_KEY",),
     "scanner": ("FMP_API_KEY",),
+    "telegram_dispatch": ("TELEGRAM_BOT_TOKEN",),
     "retention": (),
 }
 

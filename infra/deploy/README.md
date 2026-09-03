@@ -32,12 +32,21 @@ definition; this table is a reading of it.
 | `identity`     | web  | `uvicorn infra.deploy.asgi:identity_app`         | `/health/live` | —              |
 | `health`       | web  | `uvicorn infra.deploy.asgi:health_app`           | `/health/live` | —              |
 | `ingestion`    | cron | `python -m infra.deploy.ingestion`               | —              | `0 21 * * 1-5` |
+| `telegram`     | web  | `uvicorn infra.deploy.asgi:telegram_app`         | `/health/live` | —              |
 | `scanner`      | cron | `python -m infra.deploy.scanner`                 | —              | `30 22 * * 1-5` |
+| `telegram_dispatch` | cron | `python -m infra.deploy.telegram_dispatch`  | —              | `0 23 * * 1-5` |
 | `retention`    | cron | `python -m infra.deploy.retention`               | —              | `0 3 * * *`    |
 
 Only `identity` carries `preDeployCommand`. See §4.
 
-### One image, eight commands
+`telegram` is the one service needing a variable beyond the connection
+string: `TELEGRAM_WEBHOOK_SECRET`, without which it refuses to start in
+staging or production. That refusal is deliberate — see
+`services/telegram/README.md` — and
+`tests/integration/deploy/test_platform_environment.py` asserts both
+halves of it.
+
+### One image, ten commands
 
 The API services and the Live Scanner run **the same image**. That was
 measured rather than assumed: importing the four service apps pulls in
@@ -176,7 +185,7 @@ verdict returns 200 and stays in: a stale data feed is not fixed by
 having fewer servers, and removing them makes the outage worse. That is
 Module 24's decision, unchanged.
 
-Verdicts are cached for three seconds so a poll storm across eight
+Verdicts are cached for three seconds so a poll storm across ten
 containers does not become a steady background query load.
 
 ---
@@ -464,7 +473,7 @@ Written as a list of things that are **not done**, not as caveats.
    this exists, DR depends entirely on the provider's snapshots, which
    have not been verified as enabled or restorable. This is the largest
    gap on the list.
-2. **The image builds and runs — one command of eight is proven.**
+2. **The image builds and runs — one command of ten is proven.**
    Module 25 wrote this entry as "never built": Docker Hub egress was
    blocked in the build environment (403 on
    `production.cloudfront.docker.com`), so nothing could be verified
@@ -476,15 +485,15 @@ Written as a list of things that are **not done**, not as caveats.
    command. Image, venv, source layout and start command are all
    confirmed by that.
 
-   What is *not* confirmed is the other seven commands. `terminal_app`
+   What is *not* confirmed is the other nine commands. `terminal_app`
    is the only factory a real container has ever executed.
 3. **Nothing after startup is confirmed.** That deploy crashed at
    configuration resolution — the `DATABASE_URL` ordering bug, fixed and
    regression-tested by `test_platform_environment.py`. A crash at
    startup proves the build and says nothing about the running system.
    TLS termination, the platform's own health-check polling, the
-   pre-deploy migration hook, the cron schedules, and whether all eight
-   process definitions exist as eight Railway services or one, all
+   pre-deploy migration hook, the cron schedules, and whether all ten
+   process definitions exist as ten Railway services or one, all
    remain as documented and unverified.
 
    The lesson is worth keeping separately from the bug: a suite of 2,204
@@ -548,7 +557,7 @@ deployment depends on:
 | -------------------------- | ---------------------- | ---------------- |
 | Dockerfile builder + path  | every service          | Railpack builds a different image |
 | `preDeployCommand`         | `identity`             | A failed migration is a crash loop, not an abandoned deploy |
-| `cronSchedule`             | `ingestion`, `scanner`, `retention` | The job runs continuously instead of once |
+| `cronSchedule`             | `ingestion`, `scanner`, `telegram_dispatch`, `retention` | The job runs continuously instead of once |
 | Restart policy and retries | every service          | A container that cannot start looks busy rather than broken |
 
 `UNSUPPORTED_BY_IAC` in `infra/deploy/railway.py` is that table as data and
@@ -576,11 +585,12 @@ generator, not an instruction.
 
 ### Live state, 2026-09-02
 
-Three of the eight processes are deployed: `terminal` (as `Argus`),
+Three of the ten processes are deployed: `terminal` (as `Argus`),
 `public_stats` and `identity`. `intelligence`, `health`, `ingestion`,
-`scanner` and `retention` have no Railway service at all — so nothing has
-ever been ingested, no scan has ever been scheduled and no session has
-ever been pruned.
+`scanner`, `telegram`, `telegram_dispatch` and `retention` have no
+Railway service at all — so nothing has ever been ingested, no scan has
+ever been scheduled, no alert has ever been sent and no session has ever
+been pruned.
 
 `ingestion` (Module 26) is new and is the one whose absence matters most.
 The other four missing services degrade what ARGUS can *show*; this one
