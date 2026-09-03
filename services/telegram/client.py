@@ -135,6 +135,26 @@ class TelegramClient:
         """Deliberately says nothing. The default would print the token."""
         return "TelegramClient(token=***)"
 
+    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> SendResult:
+        """Register the bot's command menu. Idempotent — it replaces the list.
+
+        Deliberately *not* called on app startup, for the same reason
+        `setWebhook` is not: a registration that re-runs on every deploy
+        is one that can be silently undone by a rollback. This is invoked
+        by `python -m infra.deploy.telegram_commands`, on purpose, by a
+        person.
+
+        It lives on the client rather than in that entrypoint because the
+        client is the only thing holding the bot token, and it is the
+        only file allowed to.
+        """
+        payload = {
+            "commands": [
+                {"command": name, "description": description} for name, description in commands
+            ]
+        }
+        return self._post("setMyCommands", payload)
+
     def send_message(self, chat_id: int, text: str) -> SendResult:
         """Send one message, pacing first. Never raises."""
         self._sleep(self._pace)

@@ -70,9 +70,20 @@ from infra.security.middleware import harden
 from packages.config import SecretsProvider, bootstrap_secrets_provider
 from packages.config.environment import Environment
 from services.telegram import subscribers
-from services.telegram.commands import Command, parse_update
+from services.telegram.commands import Command, ParsedUpdate, parse_update
 from services.telegram.config import TelegramConfig
-from services.telegram.messages import START_TEXT, STOP_TEXT
+from services.telegram.endpoint import StatsEndpoint
+from services.telegram.menus import alerts_keyboard, main_keyboard
+from services.telegram.messages import (
+    MENU_TEXT,
+    START_TEXT,
+    STOP_TEXT,
+    SUBSCRIBED_TEXT,
+    UNSUBSCRIBED_TEXT,
+    alerts_menu_text,
+    statistics_text,
+)
+from services.telegram.stats import StatsClient, read_statistics
 
 __all__ = ["SECRET_TOKEN_HEADER", "WEBHOOK_PATH", "WEBHOOK_SECRET", "create_app"]
 
@@ -118,9 +129,12 @@ def create_app(
     security: SecurityConfig | None = None,
     secrets: SecretsProvider | None = None,
     profile: DeploymentProfile | None = None,
+    endpoint: StatsEndpoint | None = None,
+    stats_client: Any = None,
 ) -> FastAPI:
     settings = config or TelegramConfig()
     expected = _expected_secret(secrets, profile or profile_for())
+    resolved_endpoint = endpoint or StatsEndpoint.from_environment()
 
     app = FastAPI(
         title="ARGUS Telegram Bot",
@@ -135,6 +149,12 @@ def create_app(
     app.state.engine = engine
     app.state.config = settings
     app.state.webhook_secret = expected
+    app.state.endpoint = resolved_endpoint
+    #: Injectable so a test can drive the Statistics menu without HTTP.
+    #: `None` means "open one per request", which is what production
+    #: does: a Statistics press is rare and a pooled client held for the
+    #: life of a process is a socket kept open for nothing.
+    app.state.stats_client = stats_client
 
     @app.post(WEBHOOK_PATH, include_in_schema=False)
     async def webhook(
@@ -159,22 +179,74 @@ def create_app(
         if not update.actionable or update.chat_id is None:
             return _acknowledge()
 
-        if update.command is Command.START:
-            subscribers.subscribe(connection, update.chat_id)
-            _log.info(
-                "telegram subscriber added",
-                extra={"event": "telegram_subscribed", "chat_id": update.chat_id},
-            )
-            return _reply(update.chat_id, START_TEXT)
-
-        subscribers.unsubscribe(connection, update.chat_id)
-        _log.info(
-            "telegram subscriber removed",
-            extra={"event": "telegram_unsubscribed", "chat_id": update.chat_id},
-        )
-        return _reply(update.chat_id, STOP_TEXT)
+        return _handle(request.app, connection, update)
 
     return harden(app, security=security)
+
+
+def _handle(app: FastAPI, connection: Connection, update: ParsedUpdate) -> JSONResponse:
+    """One recognised command. Routing and one reply — no logic of its own.
+
+    Every branch reaches a function that already existed: the menus are a
+    presentation layer over `subscribers` and over `public_stats`'s API,
+    and nothing here keeps a second copy of who is subscribed or of what
+    ARGUS has published.
+    """
+    chat_id = update.chat_id
+    assert chat_id is not None  # `actionable` guarantees it
+
+    if update.command is Command.STATS:
+        return _reply(chat_id, _statistics(app), keyboard=main_keyboard())
+
+    if update.command is Command.MENU:
+        return _reply(chat_id, MENU_TEXT, keyboard=main_keyboard())
+
+    if update.command in (Command.START, Command.SUBSCRIBE):
+        subscribers.subscribe(connection, chat_id)
+        _log.info(
+            "telegram subscriber added",
+            extra={"event": "telegram_subscribed", "chat_id": chat_id},
+        )
+        if update.command is Command.START:
+            return _reply(chat_id, START_TEXT, keyboard=main_keyboard())
+        return _reply(chat_id, SUBSCRIBED_TEXT, keyboard=alerts_keyboard(subscribed=True))
+
+    if update.command in (Command.STOP, Command.UNSUBSCRIBE):
+        subscribers.unsubscribe(connection, chat_id)
+        _log.info(
+            "telegram subscriber removed",
+            extra={"event": "telegram_unsubscribed", "chat_id": chat_id},
+        )
+        if update.command is Command.STOP:
+            return _reply(chat_id, STOP_TEXT, keyboard=main_keyboard())
+        return _reply(chat_id, UNSUBSCRIBED_TEXT, keyboard=alerts_keyboard(subscribed=False))
+
+    # Command.ALERTS — the menu, whose only content is the current state.
+    # Read from `telegram_subscribers`, never from a cached copy.
+    record = subscribers.get(connection, chat_id)
+    subscribed = record is not None and record.active
+    return _reply(
+        chat_id,
+        alerts_menu_text(subscribed=subscribed),
+        keyboard=alerts_keyboard(subscribed=subscribed),
+    )
+
+
+def _statistics(app: FastAPI) -> str:
+    """The Statistics menu's text, read from `public_stats`'s own API.
+
+    Never recomputed here: `services/public_stats/aggregates.py` decides
+    what ARGUS is permitted to say about itself, and a second
+    implementation of that would be two answers to one question.
+    """
+    endpoint: StatsEndpoint = app.state.endpoint
+    injected = app.state.stats_client
+
+    if injected is not None:
+        return statistics_text(read_statistics(injected), public_page=endpoint.public_page)
+
+    with StatsClient(endpoint.base_url, timeout=endpoint.timeout) as client:
+        return statistics_text(read_statistics(client), public_page=endpoint.public_page)
 
 
 def get_connection(request: Request) -> Iterator[Connection]:
@@ -252,13 +324,16 @@ def _acknowledge() -> JSONResponse:
     return JSONResponse(status_code=200, content={"ok": True})
 
 
-def _reply(chat_id: int, text: str) -> JSONResponse:
+def _reply(chat_id: int, text: str, *, keyboard: dict[str, Any] | None = None) -> JSONResponse:
     """Answer the webhook with the reply, instead of calling the API.
 
     See the module docstring: this is what lets the public service hold
-    no bot token.
+    no bot token. It is also why the keyboard travels on the reply rather
+    than being set by a separate call — one webhook response carries
+    exactly one method, and that constraint is what chose a reply
+    keyboard over an inline one. See `menus.py`.
     """
-    return JSONResponse(
-        status_code=200,
-        content={"method": "sendMessage", "chat_id": chat_id, "text": text},
-    )
+    content: dict[str, Any] = {"method": "sendMessage", "chat_id": chat_id, "text": text}
+    if keyboard is not None:
+        content["reply_markup"] = keyboard
+    return JSONResponse(status_code=200, content=content)

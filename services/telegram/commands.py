@@ -1,8 +1,9 @@
 """Reading a Telegram update. Parsing only — no database, no decisions.
 
 Telegram sends one JSON object per event, and the events this bot cares
-about are two: a private message saying `/start` and one saying `/stop`.
-Everything else Telegram can send — edited messages, channel posts,
+about are text messages carrying one of its commands — typed as `/stats`,
+or sent as a reply-keyboard button's own label. Everything else Telegram
+can send — edited messages, channel posts,
 callback queries, a photo, a sticker, someone typing "hello" — is
 **ignored, not rejected**. That distinction matters at the protocol
 level: Telegram retries a webhook that answers with an error, so
@@ -40,13 +41,42 @@ __all__ = ["Command", "ParsedUpdate", "parse_update"]
 
 
 class Command(StrEnum):
-    """The two commands this bot answers, and everything else."""
+    """Every request this bot answers, and everything else.
+
+    `SUBSCRIBE`/`UNSUBSCRIBE` exist alongside `START`/`STOP` because they
+    are the same *action* reached from a different place: pressing
+    Subscribe inside the Alerts menu should leave you in the Alerts menu,
+    while `/start` is the way in and shows the main one. Both reach the
+    same `subscribers.subscribe`; only the reply differs.
+    """
 
     START = "start"
     STOP = "stop"
+    #: The two menus.
+    ALERTS = "alerts"
+    STATS = "stats"
+    #: Back to the main menu, from inside one.
+    MENU = "menu"
+    #: The Alerts menu's own buttons.
+    SUBSCRIBE = "subscribe"
+    UNSUBSCRIBE = "unsubscribe"
     #: A well-formed message that is not a command this bot knows.
     UNKNOWN = "unknown"
 
+
+#: The slash commands the bot answers. `/menu` is accepted but not
+#: registered with `setMyCommands` — it exists because the Back button
+#: maps to it, and a user who types it should not be told it is unknown.
+_SLASH_COMMANDS: dict[str, Command] = {
+    "start": Command.START,
+    "stop": Command.STOP,
+    "alerts": Command.ALERTS,
+    "stats": Command.STATS,
+    "statistics": Command.STATS,
+    "menu": Command.MENU,
+    "subscribe": Command.SUBSCRIBE,
+    "unsubscribe": Command.UNSUBSCRIBE,
+}
 
 #: The message containers a `/start` can plausibly arrive in. `message`
 #: is the ordinary case; `channel_post` is a channel the bot was added
@@ -65,8 +95,8 @@ class ParsedUpdate:
 
     @property
     def actionable(self) -> bool:
-        """Whether this update asks for a subscription change."""
-        return self.chat_id is not None and self.command in (Command.START, Command.STOP)
+        """Whether this update is something the bot should answer."""
+        return self.chat_id is not None and self.command is not Command.UNKNOWN
 
 
 def parse_update(body: Any, *, command_limit: int) -> ParsedUpdate:
@@ -113,6 +143,16 @@ def _command(text: Any, *, limit: int) -> Command:
         return Command.UNKNOWN
 
     head = text.strip()[:limit]
+
+    # A reply-keyboard button sends its own label as an ordinary message.
+    # Matched before the slash check, and on the exact label, so a
+    # sentence that merely contains "Alerts" is not a button press.
+    from services.telegram.menus import BUTTON_COMMANDS
+
+    button = BUTTON_COMMANDS.get(head)
+    if button is not None:
+        return button
+
     if not head.startswith("/"):
         return Command.UNKNOWN
 
@@ -120,8 +160,4 @@ def _command(text: Any, *, limit: int) -> Command:
     word = head.split()[0]
     name = word[1:].split("@", 1)[0].lower()
 
-    if name == Command.START.value:
-        return Command.START
-    if name == Command.STOP.value:
-        return Command.STOP
-    return Command.UNKNOWN
+    return _SLASH_COMMANDS.get(name, Command.UNKNOWN)

@@ -14,15 +14,88 @@ is subscribed*, which stays the right question whether or not subscribing
 becomes conditional. No billing code, no fourth role, nothing that
 assumes free access.
 
-## Two halves
+## Three parts
 
 **The webhook service** (`telegram`, web) receives Telegram's POSTs and
-does exactly two things: `/start` subscribes, `/stop` unsubscribes.
-Everything else is ignored.
+answers `/start`, `/stop` and two menus. Everything else is ignored.
 
 **The dispatch cron** (`telegram_dispatch`, `0 23 * * 1-5`) reads Module
 10's transition log for the session the scanner just scanned and sends
 one message per subscriber per transition.
+
+**The command registration** (`python -m infra.deploy.telegram_commands`)
+tells Telegram which commands to offer. Run by hand, not on deploy.
+
+## The two menus
+
+```
+🔔 Alerts       manage the BREAKOUT_READY subscription
+📊 Statistics   ARGUS's published track record, read from public_stats
+```
+
+Both are reachable as buttons and as commands (`/alerts`, `/stats`), so
+the keyboard is a convenience rather than the only way in.
+
+### Reply keyboard, not inline — for a security reason
+
+An inline keyboard's buttons produce `callback_query` updates, and each
+must be answered with `answerCallbackQuery` or the client spins until it
+times out. A webhook response carries exactly **one** method call, so
+answering the callback *and* replying needs two API calls — which means
+this service would have to hold `TELEGRAM_BOT_TOKEN`, the one thing it
+was built not to.
+
+A reply keyboard's buttons send ordinary text messages, which the
+existing path already handles: one update in, one reply out, no token.
+The cost is cosmetic. `menus.py` maps each label back to the same command
+the slash form produces, and a test asserts every label parses.
+
+### The Alerts menu is a UI, not a second mechanism
+
+Its status line is read from `telegram_subscribers` on each press, and
+its buttons call the same `subscribers.subscribe` / `.unsubscribe` that
+`/start` and `/stop` do. There is no second copy of "is this chat
+subscribed" anywhere. Only the applicable action is offered — showing
+both would mean one button is always a no-op, and a button that does
+nothing teaches a reader the buttons are decorative.
+
+### The Statistics menu calls `public_stats`, and computes nothing
+
+`services/public_stats/aggregates.py` decides what ARGUS is permitted to
+say about its own performance — which runs are approved, what the sample
+floor is, whether a rate may be quoted at all. This module imports none
+of it and calls the same HTTP API the public website calls. Two surfaces,
+one source of truth; a second implementation would produce two plausible
+numbers with no way to say which was wrong.
+
+**Four states, kept four.** A real number; an honest "N of M required";
+nothing published at all; and — the one this module adds — `public_stats`
+could not be reached. The last matters most: telling a reader "no track
+record yet" because a container was restarting would be a false statement
+about the very thing the review gate exists to keep honest. A test drives
+all four.
+
+**Over the private network.** `http://public_stats.railway.internal:8080`
+by default, overridable with `ARGUS_PUBLIC_STATS_URL` — Railway service
+names are chosen in a dashboard and two of ARGUS's are already wrong, so
+the internal hostname cannot be assumed. `ARGUS_PUBLIC_PAGE_URL`
+overrides the link the message closes with.
+
+One thing makes that hop work and would silently not: `public_stats` in
+production refuses plaintext, and the private network *is* plaintext
+because Railway terminates TLS at its edge. So the client sends
+`X-Forwarded-Proto: https`, which `tls.py` believes only from a peer
+inside `RAILWAY_PRIVATE_NETWORK`. Three tests pin it — the call
+succeeds, it fails without the header, and it fails from an address
+outside that range.
+
+**v1 shows `win_rate` and `cumulative_performance`**, plus whether the
+review gate has decided anything. `regime_breakdown`,
+`excursion_distribution` and `top_performers` are deferred: each is a
+*distribution*, and a distribution flattened into three text lines
+misleads by omission. They belong on the page, and the message links
+there. No ASCII chart — a curve drawn in monospace on a phone invites
+reading a shape into resolution that is not there.
 
 ## The public service holds no bot token
 
@@ -76,7 +149,21 @@ print(secrets.token_urlsafe(32))"`. The bot token goes **only** on the
 cron service; the webhook secret goes **only** on the web service.
 Neither belongs in `.env`, in this repository, or in a chat.
 
-**3. Register the webhook — once, by hand.**
+**3. Register the command menu — once.**
+
+```
+python -m infra.deploy.telegram_commands
+```
+
+Run against the `telegram_dispatch` service (the one holding the token),
+from a Railway shell or any environment where `TELEGRAM_BOT_TOKEN`
+resolves. The list lives in `services/telegram/menus.BOT_COMMANDS`, so
+the registered menu cannot drift from the parser — a test asserts every
+registered command is one the bot answers. Deliberately not run on app
+startup: a registration that re-runs on every deploy is one a rollback
+silently undoes.
+
+**4. Register the webhook — once, by hand.**
 
 ```
 curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
@@ -188,6 +275,12 @@ this module on.
   more useful half. It needs its own copy decision — that sentence is
   much closer to advice than the entry one — so it is not smuggled in
   here.
+- **No client-side cache on the Statistics menu.** Every press is a live
+  call to `public_stats`, so a burst of presses spends that service's
+  Module 24 rate-limit budget from one internal address. Harmless at the
+  current subscriber count (zero) and a ~15-line TTL cache when it is
+  not; not built, because a cache is state and this one has no users to
+  justify it yet.
 - **`telegram_alerts_sent` grows as subscribers × transitions** and no
   retention policy covers it. It is prunable (not append-only guarded);
   a policy must only prune rows older than the dispatch window, or
