@@ -30,7 +30,7 @@ settings ARGUS depends on:
 | --------------------------- | -------------------- | ---------------------------- |
 | Dockerfile builder + path   | every service        | Railway service settings     |
 | `preDeployCommand`          | `identity`           | Railway service settings     |
-| `cronSchedule`              | `scanner`, `retention` | Railway service settings   |
+| `cronSchedule`              | `ingestion`, `scanner`, `retention` | Railway service settings |
 | Restart policy + retries    | every service        | Railway service settings     |
 
 `UNSUPPORTED_BY_IAC` below is that table as data, and `dashboard_settings()`
@@ -49,7 +49,7 @@ Railway and is missing from the file is a service `railway config apply`
 offers to destroy. So `SERVICE_NAMES` uses the names the services actually
 carry on Railway today — including `"Identity "`, whose trailing space is a
 typo in the dashboard rather than in this file — and the managed Postgres is
-declared alongside the seven processes.
+declared alongside the eight processes.
 
 Never apply this file blind. `railway config plan` first, read every line
 marked destructive, and treat any unexpected delete as a bug in this
@@ -121,12 +121,16 @@ POSTGRES_SERVICE = "Postgres"
 #: Known defects to fix in the dashboard, in this order:
 #:   - "Argus" serves the Terminal. The name says nothing about that.
 #:   - "Identity " carries a trailing space.
+#:   - "ingestion" does not exist on Railway yet. Unlike the six that
+#:     also do not exist, this one is not optional: the scanner cannot
+#:     produce anything until it runs. See infra/deploy/README.md.
 SERVICE_NAMES: dict[str, str] = {
     "terminal": "Argus",
     "public_stats": "Public_stats",
     "intelligence": "intelligence",
     "identity": "Identity ",
     "health": "health",
+    "ingestion": "ingestion",
     "scanner": "scanner",
     "retention": "retention",
 }
@@ -141,6 +145,7 @@ SECRET_VARIABLES: dict[str, tuple[str, ...]] = {
     "intelligence": (),
     "identity": ("ARGUS_SECURITY__SESSION_SECRET", "ARGUS_SECURITY__MFA_ENCRYPTION_KEY"),
     "health": (),
+    "ingestion": ("FMP_API_KEY",),
     "scanner": ("FMP_API_KEY",),
     "retention": (),
 }
@@ -217,8 +222,11 @@ def _env_lines(name: str, indent: str) -> list[str]:
         # N workers is N independent ceilings. config.py refuses to start a
         # production process with more than one and no shared store.
         lines.append(f'{indent}WEB_CONCURRENCY: "1",')
-    if name == "scanner":
-        # scanner.py raises ScannerNotReady rather than guessing a universe.
+    if name in {"ingestion", "scanner"}:
+        # Both raise ScannerNotReady rather than guessing a universe, and
+        # both read the same variable through the same function — bars
+        # ingested for one universe and coverage measured against another
+        # would be a silent, very confusing failure.
         lines.append(f"{indent}ARGUS_UNIVERSE_VERSION: preserve(),")
     for variable in SECRET_VARIABLES[name]:
         lines.append(f"{indent}{variable}: preserve(),")

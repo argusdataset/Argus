@@ -7,10 +7,10 @@
 // for four settings ARGUS needs, which are set on the Railway
 // services themselves — see dashboard_settings() in
 // infra/deploy/railway.py for the exact values:
-//   - dockerfile: terminal, public_stats, intelligence, identity, health, scanner, retention
+//   - dockerfile: terminal, public_stats, intelligence, identity, health, ingestion, scanner, retention
 //   - preDeployCommand: identity
-//   - cronSchedule: scanner, retention
-//   - restartPolicy: terminal, public_stats, intelligence, identity, health, scanner, retention
+//   - cronSchedule: ingestion, scanner, retention
+//   - restartPolicy: terminal, public_stats, intelligence, identity, health, ingestion, scanner, retention
 //
 // Secrets appear here as names bound to preserve(), never as values.
 // preserve() keeps what Railway already holds; it cannot create a
@@ -104,6 +104,18 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Module 26. Full-universe daily OHLCV, then the tiered deep refresh. What the scanner's readiness check has always assumed exists.
+  const ingestion = service("ingestion", {
+    source: github("argusdataset/Argus", { branch: "main" }),
+    start: "python -m infra.deploy.ingestion",
+    env: {
+      ARGUS_ENV: prod ? "production" : "staging",
+      DATABASE_URL: db.env.DATABASE_URL,
+      ARGUS_UNIVERSE_VERSION: preserve(),
+      FMP_API_KEY: preserve(),
+    },
+  });
+
   // Module 18. One catch-up scan per weekday evening.
   const scanner = service("scanner", {
     source: github("argusdataset/Argus", { branch: "main" }),
@@ -127,6 +139,6 @@ export default defineRailway((ctx) => {
   });
 
   return project("passionate-unity", {
-    resources: [db, terminal, public_stats, intelligence, identityService, health, scanner, retention],
+    resources: [db, terminal, public_stats, intelligence, identityService, health, ingestion, scanner, retention],
   });
 });

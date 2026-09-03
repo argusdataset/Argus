@@ -584,11 +584,79 @@ one might not.
 
 ---
 
+### G1. The scanner cannot see the bars ingestion writes — **OPEN, HIGH**
+
+Module 26 closed the gap where nothing wrote to `canonical_ohlcv`. It did
+not make the scanner able to act on what it writes, and the reason is two
+numbers in two other modules.
+
+- Module 05 derives a daily bar's `availability_time` as its session
+  close **plus 16 hours** (`ProviderLagPolicy.daily_bar`). Deliberately
+  conservative: FMP publishes EOD within hours, but consolidated values
+  settle overnight.
+- Module 18's point-in-time cutoff for scanning that same session is its
+  close **plus 5 hours** (`scan_offset_hours`).
+
+`readiness.check_readiness` filters on `availability_time <= as_of`, and
+16 > 5. So a bar is never knowable at the cutoff applied to it, coverage
+reads zero however complete the ingestion, and the scanner records
+`DATA_NOT_READY` forever — the same outcome as before Module 26 existed,
+reached a different way.
+
+**Why it was invisible.** Module 18's integration fixtures
+(`tests/integration/feature_engine/conftest.py::insert_bars`) use a
+**one-hour** availability lag, fifteen hours more optimistic than what
+Module 05 stamps in production. Every readiness test has always passed
+against a bar no production path can produce. This is the same shape as
+A3 and A4 below: the guarantee is not broken, the test that would catch
+it breaking never exercised the real path.
+
+**The fix is one number.** `scan_offset_hours` must exceed the bar
+availability lag — 5 → 17 puts the cutoff an hour past it. Module 26's
+boundaries forbade modifying `core/live_scanner/`, so it is flagged here
+and *demonstrated* rather than applied:
+`tests/integration/ingestion/test_readiness_handoff.py` pins the
+arithmetic, pins the failure, and shows the change working against real
+ingested rows.
+
+**A second observation, smaller but related.** `scan_offset_hours` is
+tagged `operational`, whose stated meaning is "bounds how the computation
+runs, never what it produces", justified in Module 18's config by "a scan
+started at 21:00 and one at 23:00 compute identically". True of the
+computation, false of readiness: the number feeds `as_of`, and `as_of`
+decides what the scan can see. On Module 17's own definitions it is
+`calibratable`.
+
+---
+
+### G2. Corporate actions are never ingested on any schedule — **OPEN, HIGH**
+
+Module 26 ingests prices daily and fundamentals/news on a tiered cadence.
+Nothing ingests splits or dividends, ever, and Module 06's universe
+builder is likewise unwired — a separate gap, already noted.
+
+Module 08's `load_panel` builds its adjustment factors from
+`canonical_corporate_actions` at load time rather than reading a stored
+adjusted series. With that table static, a split makes every price series
+wrong from the split date backwards, silently, and Module 15's README
+already describes the consequence: an unadjusted 2-for-1 split is a −50%
+single-bar excursion that records a successful setup as a catastrophic
+failure.
+
+It was flagged rather than fixed because it is a spending decision, not a
+technical one. Module 04 exposes splits and dividends only per-symbol —
+there is no calendar endpoint — so a daily full-universe sweep is two
+extra requests per symbol per day, roughly tripling Module 26's OHLCV
+volume. The cheaper option is a third tier on the same 30/10/1/1 cadence
+as the deep refresh.
+
+---
+
 ## Summary
 
 | Severity | Open | Deferred | Closed |
 |---|---|---|---|
-| HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
+| HIGH | A1, A2 (Module 11 copy), C1, C3, G1, G2 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
 | — | — | — | C2, E1, E2, E3, E4, E5, E6 |

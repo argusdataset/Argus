@@ -10,6 +10,7 @@ from infra.db.metadata import metadata
 from infra.db.schema import (
     canonical,
     identity,
+    ingestion,
     intelligence,
     live_scanner,
     news,
@@ -23,6 +24,7 @@ from infra.db.schema import (
 __all__ = [
     "canonical",
     "identity",
+    "ingestion",
     "intelligence",
     "live_scanner",
     "news",

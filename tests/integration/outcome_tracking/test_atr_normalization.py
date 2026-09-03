@@ -15,7 +15,7 @@ only thing that differs between the two cases.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -35,7 +35,7 @@ VOLATILE_PRE_ENTRY = [100.0 * (1.08 if i % 2 else 1.0) for i in range(24)] + [10
 #: Identical for both cases: a smooth +3% rise over ten sessions, then
 #: flat for the rest of the window. Well inside what the quiet case's
 #: threshold reaches and well short of what the volatile case's does.
-POST_ENTRY = [100.0 * (1.003**min(step, 10)) for step in range(1, 40)]
+POST_ENTRY = [100.0 * (1.003 ** min(step, 10)) for step in range(1, 40)]
 
 AS_OF = datetime(2024, 6, 1, tzinfo=UTC)
 
@@ -114,9 +114,7 @@ def test_the_effective_thresholds_are_the_multiple_times_the_atr_fraction(measur
     assert record.target_threshold == pytest.approx(
         thresholds.target_atr_multiple.value * atr_fraction
     )
-    assert record.stop_threshold == pytest.approx(
-        thresholds.stop_atr_multiple.value * atr_fraction
-    )
+    assert record.stop_threshold == pytest.approx(thresholds.stop_atr_multiple.value * atr_fraction)
     assert record.stop_threshold < 0 < record.target_threshold
 
 

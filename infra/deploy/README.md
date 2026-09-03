@@ -31,12 +31,13 @@ definition; this table is a reading of it.
 | `intelligence` | web  | `uvicorn infra.deploy.asgi:intelligence_app`     | `/health/live` | —              |
 | `identity`     | web  | `uvicorn infra.deploy.asgi:identity_app`         | `/health/live` | —              |
 | `health`       | web  | `uvicorn infra.deploy.asgi:health_app`           | `/health/live` | —              |
+| `ingestion`    | cron | `python -m infra.deploy.ingestion`               | —              | `0 21 * * 1-5` |
 | `scanner`      | cron | `python -m infra.deploy.scanner`                 | —              | `30 22 * * 1-5` |
 | `retention`    | cron | `python -m infra.deploy.retention`               | —              | `0 3 * * *`    |
 
 Only `identity` carries `preDeployCommand`. See §4.
 
-### One image, seven commands
+### One image, eight commands
 
 The API services and the Live Scanner run **the same image**. That was
 measured rather than assumed: importing the four service apps pulls in
@@ -175,7 +176,7 @@ verdict returns 200 and stays in: a stale data feed is not fixed by
 having fewer servers, and removing them makes the outage worse. That is
 Module 24's decision, unchanged.
 
-Verdicts are cached for three seconds so a poll storm across seven
+Verdicts are cached for three seconds so a poll storm across eight
 containers does not become a steady background query load.
 
 ---
@@ -463,7 +464,7 @@ Written as a list of things that are **not done**, not as caveats.
    this exists, DR depends entirely on the provider's snapshots, which
    have not been verified as enabled or restorable. This is the largest
    gap on the list.
-2. **The image builds and runs — one command of seven is proven.**
+2. **The image builds and runs — one command of eight is proven.**
    Module 25 wrote this entry as "never built": Docker Hub egress was
    blocked in the build environment (403 on
    `production.cloudfront.docker.com`), so nothing could be verified
@@ -475,15 +476,15 @@ Written as a list of things that are **not done**, not as caveats.
    command. Image, venv, source layout and start command are all
    confirmed by that.
 
-   What is *not* confirmed is the other six commands. `terminal_app` is
-   the only factory a real container has ever executed.
+   What is *not* confirmed is the other seven commands. `terminal_app`
+   is the only factory a real container has ever executed.
 3. **Nothing after startup is confirmed.** That deploy crashed at
    configuration resolution — the `DATABASE_URL` ordering bug, fixed and
    regression-tested by `test_platform_environment.py`. A crash at
    startup proves the build and says nothing about the running system.
    TLS termination, the platform's own health-check polling, the
-   pre-deploy migration hook, the cron schedules, and whether all seven
-   process definitions exist as seven Railway services or one, all
+   pre-deploy migration hook, the cron schedules, and whether all eight
+   process definitions exist as eight Railway services or one, all
    remain as documented and unverified.
 
    The lesson is worth keeping separately from the bug: a suite of 2,204
@@ -547,7 +548,7 @@ deployment depends on:
 | -------------------------- | ---------------------- | ---------------- |
 | Dockerfile builder + path  | every service          | Railpack builds a different image |
 | `preDeployCommand`         | `identity`             | A failed migration is a crash loop, not an abandoned deploy |
-| `cronSchedule`             | `scanner`, `retention` | The job runs continuously instead of once |
+| `cronSchedule`             | `ingestion`, `scanner`, `retention` | The job runs continuously instead of once |
 | Restart policy and retries | every service          | A container that cannot start looks busy rather than broken |
 
 `UNSUPPORTED_BY_IAC` in `infra/deploy/railway.py` is that table as data and
@@ -575,10 +576,19 @@ generator, not an instruction.
 
 ### Live state, 2026-09-02
 
-Three of the seven processes are deployed: `terminal` (as `Argus`),
-`public_stats` and `identity`. `intelligence`, `health`, `scanner` and
-`retention` have no Railway service at all — so no scan has ever been
-scheduled and no session has ever been pruned. All three live services now
+Three of the eight processes are deployed: `terminal` (as `Argus`),
+`public_stats` and `identity`. `intelligence`, `health`, `ingestion`,
+`scanner` and `retention` have no Railway service at all — so nothing has
+ever been ingested, no scan has ever been scheduled and no session has
+ever been pruned.
+
+`ingestion` (Module 26) is new and is the one whose absence matters most.
+The other four missing services degrade what ARGUS can *show*; this one
+is what fills `canonical_ohlcv`, and without it the scanner has nothing
+to scan even once it exists. Create it before `scanner`, not after —
+and note that on the numbers as they stand today the scanner still
+cannot see what it writes, for the reason set out in
+`core/ingestion/README.md`. All three live services now
 build from the Dockerfile, run the production profile, and carry the
 health check, restart policy and — on `identity` — the pre-deploy migration.
 That was applied through the API, not from this file; the first

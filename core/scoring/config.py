@@ -68,8 +68,7 @@ SCORE_MAX = 100.0
 #: rather than a flat percentage: see that module's docstring for why a
 #: flat threshold is a structural flaw rather than a calibration detail.
 PROBABILITY_DEFINITION = (
-    "+1.5×ATR before -0.75×ATR within 60 trading days "
-    "(ATR: 20-session average true range at entry)"
+    "+1.5×ATR before -0.75×ATR within 60 trading days (ATR: 20-session average true range at entry)"
 )
 
 #: Appended to the stored definition because `signals` has no JSONB

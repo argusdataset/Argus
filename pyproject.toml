@@ -91,6 +91,16 @@ known-first-party = ["core", "data", "infra", "packages", "services", "tests"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# Ruff formats Python inside Markdown fences as if it were a module, which
+# is wrong for this repository's documentation: the architecture notes
+# quote *fragments* — a bare `Column(...)` line from a table definition, an
+# import shown mid-sentence — and the formatter rewrites a fragment into
+# valid-module shape, turning `Column("x", Text)` into `(Column("x", Text),)`.
+# That makes the documentation say something the code does not.
+#
+# Excluded rather than fixed by relabelling the fences, because the fences
+# are right: those blocks are Python and should be highlighted as Python.
+exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

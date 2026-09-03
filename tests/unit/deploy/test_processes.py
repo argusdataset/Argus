@@ -19,11 +19,11 @@ from infra.deploy.processes import (
 )
 
 WEB_SERVICES = {"terminal", "public_stats", "intelligence", "identity", "health"}
-CRON_SERVICES = {"scanner", "retention"}
+CRON_SERVICES = {"ingestion", "scanner", "retention"}
 
 
-def test_every_service_module_19_to_24_built_has_a_process():
-    """The four API services, the health service, and both cron jobs.
+def test_every_service_module_19_to_26_built_has_a_process():
+    """The four API services, the health service, and all three cron jobs.
 
     Written as an equality rather than a series of `in` checks so that a
     service added without a process definition, or a definition left
@@ -114,6 +114,29 @@ def test_the_scanner_runs_after_the_us_close_on_weekdays():
     minute, hour, _, _, weekday = PROCESSES["scanner"].schedule.split()
     assert (int(hour), int(minute)) == (22, 30)
     assert weekday == "1-5"
+
+
+def test_ingestion_runs_before_the_scanner_on_the_same_weekdays():
+    """The two weekday crons are ordered, and the order is the deadline.
+
+    The scanner refuses to scan a session whose OHLCV coverage is short,
+    and ingestion is what delivers it — so a schedule change that moved
+    ingestion after the scanner would make every scan `DATA_NOT_READY`
+    with nothing anywhere naming the cause. Asserted as an inequality
+    between the two definitions rather than as two literal times, so
+    moving either one keeps the relationship checked.
+    """
+    ingestion = PROCESSES["ingestion"].schedule.split()
+    scanner = PROCESSES["scanner"].schedule.split()
+
+    assert ingestion[-1] == scanner[-1] == "1-5"
+    assert (int(ingestion[1]), int(ingestion[0])) < (int(scanner[1]), int(scanner[0]))
+
+
+def test_the_ingestion_process_runs_its_own_module():
+    """The command string is the only link between config and code."""
+    assert PROCESSES["ingestion"].command() == "python -m infra.deploy.ingestion"
+    assert PROCESSES["ingestion"] not in api_processes()
 
 
 def test_retention_runs_every_day_including_weekends():

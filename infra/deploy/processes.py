@@ -1,7 +1,7 @@
 """What each deployable process actually runs. One definition, several consumers.
 
 Railway's configuration, the Dockerfile's default command, this module's
-README and the tests that check them all describe the same seven
+README and the tests that check them all describe the same eight
 processes. Written four times they drift; written once and read four
 times they cannot. `PROCESSES` is that once.
 
@@ -32,8 +32,19 @@ Neither serves. Railway health-checks HTTP services by polling a path; a
 cron service has no path to poll and no process running between firings.
 The scanner's health is Module 18's `live_scan_runs` table and Module
 23's `scan_health`, which the health service reports; the retention
-job's is its own exit code and the growth records it logs. A
-process-level probe on either would answer a question nobody is asking.
+job's is its own exit code and the growth records it logs; the ingestion
+job's is its exit code plus the readiness report it logs, which is the
+scanner's own coverage question asked an hour early. A process-level
+probe on any of them would answer a question nobody is asking.
+
+## Ordering between the two weekday crons
+
+`ingestion` at 21:00 UTC and `scanner` at 22:30 UTC are not independent.
+The scanner refuses to scan a session whose OHLCV coverage is short, and
+`ingestion` is what delivers it — so the ninety minutes between them is a
+deadline, not a gap. Railway has no notion of one cron depending on
+another, so the dependency lives in the schedules and is stated in both
+files rather than being inferable from neither.
 """
 
 from __future__ import annotations
@@ -140,6 +151,21 @@ PROCESSES: dict[str, ProcessDefinition] = {
         description=(
             "Modules 23/24. Public liveness plus the admin-gated detailed view. "
             "Its own liveness path is the one Railway polls."
+        ),
+    ),
+    "ingestion": ProcessDefinition(
+        name="ingestion",
+        kind="cron",
+        module="infra.deploy.ingestion",
+        # 21:00 UTC on weekdays, ninety minutes before the scanner. The
+        # margin is sized for FMP's slowest paid plan: ~33 minutes for a
+        # ten-thousand-symbol universe at 300 requests a minute. The
+        # tiered fundamentals/news half runs after the prices and has no
+        # deadline, since nothing checks how fresh a fundamental is.
+        schedule="0 21 * * 1-5",
+        description=(
+            "Module 26. Full-universe daily OHLCV, then the tiered deep refresh. "
+            "What the scanner's readiness check has always assumed exists."
         ),
     ),
     "scanner": ProcessDefinition(

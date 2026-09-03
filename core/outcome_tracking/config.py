@@ -105,8 +105,7 @@ CALIBRATABLE = "calibratable"
 #: The predefined outcome, in words. Identical to Module 13's
 #: `PROBABILITY_DEFINITION` — see the module docstring on why that matters.
 SUCCESS_DEFINITION = (
-    "+1.5×ATR before -0.75×ATR within 60 trading days "
-    "(ATR: 20-session average true range at entry)"
+    "+1.5×ATR before -0.75×ATR within 60 trading days (ATR: 20-session average true range at entry)"
 )
 
 

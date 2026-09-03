@@ -15,7 +15,7 @@ from datetime import timedelta
 import pytest
 
 from infra.db.enums import OutcomeStatus
-from services.public_stats.aggregates import CHARTS, CHART_TOP_PERFORMERS
+from services.public_stats.aggregates import CHART_TOP_PERFORMERS, CHARTS
 from services.public_stats.snapshots import refresh_public_stats
 from tests.integration.public_stats.conftest import AS_OF, PERIOD_START
 
@@ -41,9 +41,7 @@ def test_top_performers_is_one_of_the_five_published_charts():
 # --------------------------------------------------------------------------
 
 
-def test_only_success_outcomes_at_or_above_the_threshold_qualify(
-    client, published, seed_outcomes
-):
+def test_only_success_outcomes_at_or_above_the_threshold_qualify(client, published, seed_outcomes):
     seed_outcomes(3, prefix="BIG", outcome_status=OutcomeStatus.SUCCESS, relative_return=0.60)
     seed_outcomes(
         3,
@@ -114,7 +112,10 @@ def test_entries_are_sorted_by_realized_return_descending(client, published, see
     )
     published()
 
-    returns = [row["realized_return"] for row in client.get("/public/stats/top_performers").json()["series"]]
+    returns = [
+        row["realized_return"]
+        for row in client.get("/public/stats/top_performers").json()["series"]
+    ]
 
     assert returns == sorted(returns, reverse=True)
 
@@ -264,7 +265,12 @@ def test_the_four_original_charts_still_serve_unchanged(client, published, seed_
     seed_outcomes(40, prefix="ORIG")
     published()
 
-    for chart in ("win_rate", "cumulative_performance", "regime_breakdown", "excursion_distribution"):
+    for chart in (
+        "win_rate",
+        "cumulative_performance",
+        "regime_breakdown",
+        "excursion_distribution",
+    ):
         response = client.get(f"/public/stats/{chart}")
         assert response.status_code == 200
         payload = response.json()

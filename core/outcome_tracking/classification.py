@@ -302,8 +302,7 @@ def _false_positive(
             None,
             "The false-positive type could not be assigned: entry ATR was not "
             "measurable, so there is no scale on which to judge whether this "
-            "security's excursion counts as movement. "
-            + ", ".join(excursion.unavailable),
+            "security's excursion counts as movement. " + ", ".join(excursion.unavailable),
             WEAK,
         )
 

@@ -30,9 +30,18 @@ def at_head(fresh_engine: Engine, alembic_target) -> Engine:
 
 
 def test_rolling_back_to_the_previous_release_is_safe(at_head: Engine):
-    """0013 only added a table, so code that predates it cannot notice."""
+    """0013 and 0014 only added tables, so older code cannot notice.
+
+    The head revision is read from the database rather than written down.
+    It used to be a literal, which meant every new migration failed this
+    test for no reason connected to what the test is about — and a test
+    that has to be edited on every unrelated change is one people learn
+    to edit without reading.
+    """
+    head = pending_migrations(at_head).current
     assessment = assess_rollback("0012", at_head)
-    assert assessment.current == "0013"
+
+    assert assessment.current == head
     assert assessment.code_rollback_safe
     assert assessment.blocking == ()
 
@@ -52,7 +61,9 @@ def test_rolling_back_past_a_column_that_was_tightened_is_not_safe(at_head: Engi
 def test_rolling_back_to_where_the_database_already_is_has_nothing_to_assess(
     at_head: Engine,
 ):
-    assessment = assess_rollback("0013", at_head)
+    head = pending_migrations(at_head).current
+    assessment = assess_rollback(head, at_head)
+
     assert assessment.revisions == ()
     assert assessment.code_rollback_safe
 
