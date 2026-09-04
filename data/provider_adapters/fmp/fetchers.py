@@ -46,7 +46,10 @@ from data.provider_adapters.fmp.models import (
     EmptyReason,
     FetchProvenance,
     FinancialStatement,
+    InsiderTransaction,
+    InstitutionalOwnershipSummary,
     NewsArticle,
+    SecFiling,
     SecurityListing,
 )
 from packages.config import AppConfig, get_config
@@ -409,6 +412,75 @@ class FmpFetcher:
         records = [self._news(row, provenance) for row in _rows(body)]
         return self._result(records, provenance)
 
+    # -- Ultimate-plan: ownership, insider activity, material events --------
+
+    async def fetch_institutional_ownership(
+        self, symbol: str, *, year: int | None = None, quarter: int | None = None
+    ) -> FetchResult[InstitutionalOwnershipSummary]:
+        """One symbol's 13F summary. `year`/`quarter` default to FMP's own
+        "most recent" when omitted."""
+        params: dict[str, Any] = {"symbol": symbol}
+        if year is not None:
+            params["year"] = year
+        if quarter is not None:
+            params["quarter"] = quarter
+
+        body, provenance = await self._client.get(
+            endpoints.INSTITUTIONAL_OWNERSHIP_SUMMARY, params=params
+        )
+        records = [
+            self._institutional_ownership(row, symbol, year, quarter, provenance)
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_insider_trades(
+        self, symbol: str, *, page: int = 0, limit: int = 100
+    ) -> FetchResult[InsiderTransaction]:
+        """One symbol's insider transactions, one page."""
+        body, provenance = await self._client.get(
+            endpoints.INSIDER_TRADING_SEARCH,
+            params={"symbol": symbol, "page": page, "limit": limit},
+        )
+        records = [self._insider_transaction(row, symbol, provenance) for row in _rows(body)]
+        return self._result(records, provenance)
+
+    async def fetch_latest_8k_filings(
+        self, *, page: int = 0, limit: int = 100
+    ) -> FetchResult[SecFiling]:
+        """Every symbol's most recent 8-K filings, one page.
+
+        The bulk path — one request covers the whole market rather than
+        one per symbol, the same reason `fetch_eod_for_date` exists
+        alongside `fetch_daily_history`. The right tool for a daily
+        "who filed today" universe check.
+        """
+        body, provenance = await self._client.get(
+            endpoints.SEC_8K_LATEST, params={"page": page, "limit": limit}
+        )
+        records = [
+            self._sec_filing(row, str(row.get("symbol") or ""), "8-K", provenance)
+            for row in _rows(body)
+            if row.get("symbol")
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_filings_for_symbol(
+        self, symbol: str, *, form_type: str = "8-K", page: int = 0, limit: int = 100
+    ) -> FetchResult[SecFiling]:
+        """One symbol's SEC filing history, filtered to `form_type`.
+
+        The per-symbol path — right for a single security's history or a
+        backfill, wrong for a daily whole-universe check (see
+        `fetch_latest_8k_filings`).
+        """
+        body, provenance = await self._client.get(
+            endpoints.SEC_FILINGS_SEARCH_BY_SYMBOL,
+            params={"symbol": symbol, "type": form_type, "page": page, "limit": limit},
+        )
+        records = [self._sec_filing(row, symbol, form_type, provenance) for row in _rows(body)]
+        return self._result(records, provenance)
+
     # -- Record construction ------------------------------------------------
 
     @staticmethod
@@ -536,6 +608,45 @@ class FmpFetcher:
             text=row.get("text"),
             raw=_extra(row, consumed),
         )
+
+    @staticmethod
+    def _institutional_ownership(
+        row: dict[str, Any],
+        symbol: str,
+        year: int | None,
+        quarter: int | None,
+        provenance: FetchProvenance,
+    ) -> InstitutionalOwnershipSummary:
+        """Nothing consumed but `symbol`: every concept here — investor
+        counts, share totals, ownership percent, the limited call/put
+        figures — has an unconfirmed field name, so the whole row stays in
+        `raw` for `FIELD_ALIASES` to resolve downstream."""
+        return InstitutionalOwnershipSummary(
+            provenance=provenance,
+            symbol=symbol,
+            year=year,
+            quarter=quarter,
+            raw=dict(row),
+        )
+
+    @staticmethod
+    def _insider_transaction(
+        row: dict[str, Any], symbol: str, provenance: FetchProvenance
+    ) -> InsiderTransaction:
+        """Same reasoning as `_institutional_ownership`: transaction code,
+        quantity, price, filer name and position are all unconfirmed field
+        names, so nothing is extracted here."""
+        return InsiderTransaction(provenance=provenance, symbol=symbol, raw=dict(row))
+
+    @staticmethod
+    def _sec_filing(
+        row: dict[str, Any], symbol: str, form_type: str, provenance: FetchProvenance
+    ) -> SecFiling:
+        """`form_type` is carried because both fetch paths already know it
+        (a filter param on one, a fixed value on the other); the filing
+        date, accepted timestamp, item numbers and link are unconfirmed
+        and stay in `raw`."""
+        return SecFiling(provenance=provenance, symbol=symbol, form_type=form_type, raw=dict(row))
 
     @staticmethod
     def _earnings(row: dict[str, Any], provenance: FetchProvenance) -> EarningsEvent:

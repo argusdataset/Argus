@@ -181,6 +181,48 @@ class NewsArticle(FmpRecord):
     text: str | None = None
 
 
+class InstitutionalOwnershipSummary(FmpRecord):
+    """One symbol's 13F institutional-ownership summary for one quarter.
+
+    `year`/`quarter` are the request parameters this row answers for, kept
+    as typed fields because the adapter controls them regardless of what
+    the response echoes back. Everything else — investor counts, share
+    totals, the limited call/put figures — stays in `raw`: FMP's exact
+    field names for this endpoint are documented but not verified against
+    a live key (Ultimate plan, not yet purchased). See
+    `core/ownership_signals/translate.py`'s `FIELD_ALIASES`.
+    """
+
+    symbol: str
+    year: int | None = None
+    quarter: int | None = None
+
+
+class InsiderTransaction(FmpRecord):
+    """One insider-trading transaction, as reported to the SEC.
+
+    Deliberately thin: transaction code (buy/sell/award), quantity, price
+    and the reporting person's name/position all stay in `raw` and are
+    resolved by `core/ownership_signals/translate.py`'s `FIELD_ALIASES` —
+    the same "field names not confirmed, several spellings tried" caveat
+    as `InstitutionalOwnershipSummary`.
+    """
+
+    symbol: str
+
+
+class SecFiling(FmpRecord):
+    """One SEC filing (8-K and, in principle, any other form type).
+
+    `form_type` is read here because `fetch_filings_for_symbol` can filter
+    by it; the filing date, accepted timestamp, item numbers and link stay
+    in `raw` — see `core/news_signals/filings.py`'s `FIELD_ALIASES`.
+    """
+
+    symbol: str
+    form_type: str | None = None
+
+
 class EarningsEvent(FmpRecord):
     """A scheduled or historical earnings date.
 

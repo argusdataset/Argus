@@ -99,6 +99,38 @@ MERGERS_ACQUISITIONS = Endpoint(
 EARNINGS_CALENDAR = Endpoint("earnings_calendar", "/stable/earnings-calendar", immutable=False)
 STOCK_NEWS = Endpoint("stock_news", "/stable/news/stock", immutable=False)
 
+# --- Ultimate-plan: ownership, insider activity, material events -----------
+#
+# Added for the $149/mo Ultimate tier (3000 req/min). Documented FMP paths,
+# not verified against a live key — the same caveat SPLITS/DIVIDENDS-era
+# endpoints carried before them. See core/news_signals/filings.py and
+# core/ownership_signals/ for the FIELD_ALIASES tolerance this buys.
+
+#: Per-symbol, one quarter's institutional 13F summary. `year`/`quarter`
+#: are request params, not part of the path.
+INSTITUTIONAL_OWNERSHIP_SUMMARY = Endpoint(
+    "institutional_ownership_summary",
+    "/stable/institutional-ownership/symbol-positions-summary",
+    immutable=False,
+)
+
+#: Per-symbol insider transactions, paged.
+INSIDER_TRADING_SEARCH = Endpoint(
+    "insider_trading_search", "/stable/insider-trading/search", immutable=False
+)
+
+#: Every symbol's most recent 8-K filings, paged. The bulk counterpart to
+#: SEARCH_BY_SYMBOL below — the right tool for "who filed today", the same
+#: role EOD_BULK plays for prices.
+SEC_8K_LATEST = Endpoint("sec_8k_latest", "/stable/8k-latest", immutable=False)
+
+#: One symbol's SEC filing history, filterable by form type. The right
+#: tool for a single security's history; the wrong one for a daily
+#: universe-wide "did anyone file today" check.
+SEC_FILINGS_SEARCH_BY_SYMBOL = Endpoint(
+    "sec_filings_search_by_symbol", "/stable/search-by-symbol", immutable=False
+)
+
 #: Every endpoint above, by name — used by tests to assert the registry
 #: and the fetchers stay in step.
 ALL_ENDPOINTS: tuple[Endpoint, ...] = (
@@ -118,4 +150,8 @@ ALL_ENDPOINTS: tuple[Endpoint, ...] = (
     MERGERS_ACQUISITIONS,
     EARNINGS_CALENDAR,
     STOCK_NEWS,
+    INSTITUTIONAL_OWNERSHIP_SUMMARY,
+    INSIDER_TRADING_SEARCH,
+    SEC_8K_LATEST,
+    SEC_FILINGS_SEARCH_BY_SYMBOL,
 )

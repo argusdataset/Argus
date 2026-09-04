@@ -54,6 +54,7 @@ __all__ = [
     "CALIBRATABLE",
     "KINDS",
     "STRUCTURAL",
+    "FilingIngestionSettings",
     "NewsSignalConfig",
     "NewsSignalThreshold",
     "NewsSignalThresholds",
@@ -149,6 +150,46 @@ class NewsSignalThresholds:
     @property
     def multiple(self) -> float:
         return self.anomaly_multiple.value
+
+
+@dataclass(frozen=True, slots=True)
+class FilingIngestionSettings:
+    """The one number the SEC-filing ingestion path needs: how long after
+    a filing's accepted timestamp ARGUS could plausibly have fetched it.
+
+    Kept separate from `NewsSignalThresholds` deliberately: this is a
+    PIT-timing assumption about data latency, not a calibratable decision
+    about what counts as an anomaly, and mixing the two would make
+    `NewsSignalThresholds.calibratable()` claim a data-latency constant is
+    an invented magnitude waiting on outcome data, which it is not —
+    mirroring the same separation `data/canonical_model/pit.py`'s
+    `ProviderLagPolicy` draws from every calibratable threshold in this
+    project.
+    """
+
+    availability_lag_hours: NewsSignalThreshold = field(
+        default_factory=lambda: _t(
+            24.0,
+            STRUCTURAL,
+            "Hours after a filing's accepted timestamp before ARGUS could "
+            "plausibly have fetched it — the same 24-hour assumption "
+            "`ProviderLagPolicy.fundamentals` makes for SEC-accepted "
+            "filings generally. Structural: it follows from how quickly "
+            "an aggregator can be expected to surface a new filing, not "
+            "from a trading judgement.",
+        )
+    )
+
+    def as_dict(self) -> dict[str, float]:
+        return {f.name: float(getattr(self, f.name).value) for f in fields(self)}
+
+    @classmethod
+    def names(cls) -> tuple[str, ...]:
+        return tuple(f.name for f in fields(cls))
+
+    @property
+    def availability_lag(self) -> timedelta:
+        return timedelta(hours=self.availability_lag_hours.value)
 
 
 @dataclass(frozen=True, slots=True)
