@@ -13,80 +13,127 @@ deleted. ARGUS surfaces evidence and probabilities; it does not make trading
 decisions and is not (yet) a commercial product — the near-term goal is to
 run it honestly for years and build a real track record first.
 
-This repository is being built **module by module**. This is **Module 01**:
-the architecture and project skeleton. It contains no business logic, no
-database schema, no external API calls, and no data — just the structure
-everything else will be built into. See
+This repository was built **module by module**, and all 27 planned modules
+are now built (deployment to Railway is in progress — see
+[Status](#status)). See
 [`docs/architecture/ARGUS_CONTEXT.md`](docs/architecture/ARGUS_CONTEXT.md)
-for the full project context.
+for the full project context, and
+[`docs/architecture/KNOWN_ISSUES.md`](docs/architecture/KNOWN_ISSUES.md) for
+the audited, currently-open gaps (below in [Status](#status)).
+
+## Module map
+
+| # | Module | Lives in |
+|---|--------|----------|
+| 01 | Architecture & project foundation | repository skeleton |
+| 02 | Configuration, environments & secrets | `packages/config/` |
+| 03 | Database foundation | `infra/db/` |
+| 04 | FMP provider adapter | `data/provider_adapters/fmp/` |
+| 05 | Canonical data model & normalization | `data/canonical_model/`, `data/normalization/` |
+| 06 | Universe construction & versioning | `core/universe/` |
+| 07 | Point-in-time enforcement | `core/data_validation/` |
+| 08 | Feature engineering engine | `core/feature_engine/` |
+| 09 | Candidate detection & eligibility gating | `core/candidate_detection/` |
+| 10 | Market state engine & target-model-v1 | `core/market_state/` |
+| 11 | Historical similarity engine | `core/historical_similarity/` |
+| 12 | Risk context, pending events, invalidation | `core/risk_context/` |
+| 13 | Scoring engine | `core/scoring/` |
+| 14 | Setup lifecycle (event-sourced) | `core/lifecycle/` |
+| 15 | Outcome tracking, MFE/MAE, CASE record | `core/outcome_tracking/` |
+| 16 | Explanation layer | `core/explanation/` |
+| 17 | Replay, evaluation, publish gating | `core/model_validation_evaluation/` |
+| 18 | The live scanner, scheduled | `core/live_scanner/` |
+| 19 | Terminal API | `services/terminal/` |
+| 20 | Public page & public-stats gate | `services/public_stats/` |
+| 21 | Intelligence API | `services/intelligence/` |
+| 22 | Authentication & user management | `services/identity/` |
+| 23 | Monitoring, logging & observability | `infra/observability/` |
+| 24 | Security hardening | `infra/security/` |
+| 25 | Production deployment & disaster recovery | `infra/deploy/` |
+| 26 | Daily ingestion orchestration & deep refresh | `core/ingestion/` |
+| 27 | Telegram alerts on BREAKOUT_READY | `services/telegram/` |
+
+A Phase 1 Integration Audit followed Module 25 and produced
+[`docs/architecture/KNOWN_ISSUES.md`](docs/architecture/KNOWN_ISSUES.md) (also
+available as a PDF, `docs/architecture/PHASE1_AUDIT_REPORT.pdf`) — the single
+register of what each module's own report flagged as unfixed, plus what the
+audit itself found. Entries leave that register by being fixed and having the
+fix pointed at, not by being forgotten.
 
 ## Repository structure
 
 ```
 argus/
 ├── core/                              # Intelligence Core — one deployable unit
-│   ├── universe/                      # Universe definition & filtering
-│   ├── data_validation/               # Canonical data validation
-│   ├── feature_engine/                # Feature vector computation
-│   ├── candidate_detection/           # Setup-phase candidate detection
-│   ├── target_model_matching/         # Target model matching
-│   │   └── models/target_model_v1/    # First named target model
-│   ├── historical_similarity/         # Historical setup similarity search
-│   ├── risk_context/                  # Risk / volatility / liquidity context
-│   ├── scoring/                       # Explainable multi-component scoring
-│   ├── lifecycle/                     # Setup lifecycle tracking
-│   ├── outcome_tracking/              # Outcome recording (nothing deleted)
-│   └── model_validation_evaluation/   # Model validation & evaluation
-│       ├── validation/
-│       └── evaluation/
+│   ├── universe/                      # Module 06 — universe definition & versioning
+│   ├── data_validation/               # Module 07 — point-in-time enforcement
+│   ├── feature_engine/                # Module 08 — feature vector computation
+│   ├── candidate_detection/           # Module 09 — setup-phase candidate detection
+│   ├── market_state/                  # Module 10 — market state engine, target-model-v1, watchlists
+│   ├── historical_similarity/         # Module 11 — historical setup similarity search
+│   ├── risk_context/                  # Module 12 — risk / volatility / liquidity context
+│   ├── scoring/                       # Module 13 — explainable multi-component scoring
+│   ├── lifecycle/                     # Module 14 — setup lifecycle tracking (event-sourced)
+│   ├── outcome_tracking/              # Module 15 — outcome recording (nothing deleted)
+│   ├── explanation/                   # Module 16 — explanation layer
+│   ├── model_validation_evaluation/   # Module 17 — replay, evaluation, publish gating
+│   │   ├── validation/
+│   │   └── evaluation/
+│   ├── live_scanner/                  # Module 18 — the scheduled scanner
+│   └── ingestion/                     # Module 26 — daily ingestion orchestration
 ├── services/
-│   ├── terminal/                      # Fundamentals/news, independent of scoring
-│   ├── watchlist/                     # User watchlists
-│   ├── public_stats/                  # Public track-record stats
-│   └── identity/                      # Auth/users
+│   ├── terminal/                      # Module 19 — fundamentals/news, independent of scoring
+│   ├── watchlist/                     # User watchlists (query layer over core/market_state)
+│   ├── public_stats/                  # Module 20 — public track-record page & stats gate
+│   ├── intelligence/                  # Module 21 — intelligence API
+│   ├── identity/                      # Module 22 — auth/users
+│   ├── telegram/                      # Module 27 — BREAKOUT_READY alerts (webhook + dispatch)
+│   └── shared/                        # Cross-service helpers
 ├── data/
 │   ├── provider_adapters/
-│   │   └── fmp/                       # FMP provider adapter
-│   ├── canonical_model/               # Canonical schema + validation
+│   │   └── fmp/                       # Module 04 — FMP provider adapter
+│   ├── canonical_model/               # Module 05 — canonical schema + validation
 │   └── normalization/                 # Corp actions, ticker/identity history
 ├── packages/
+│   ├── config/                        # Module 02 — configuration, environments & secrets
 │   ├── model_registry_client/         # Shared model registry client
 │   ├── feature_schema/                # Shared feature-vector schema
 │   └── shared_types/                  # Shared types across core/services
 ├── infra/
-│   ├── db/                            # DB migrations (Module 03)
-│   └── observability/                 # Logging/metrics/tracing config
+│   ├── db/                            # Module 03 — schema & migrations
+│   ├── observability/                 # Module 23 — logging/metrics/tracing
+│   ├── security/                      # Module 24 — security hardening
+│   └── deploy/                        # Module 25 — Docker, Railway IaC, cron process defs
 ├── docs/
-│   └── architecture/                  # ARGUS_CONTEXT.md and other design docs
+│   └── architecture/                  # ARGUS_CONTEXT.md, KNOWN_ISSUES.md, and other design docs
 └── tests/
     ├── unit/
     ├── integration/
     └── e2e/
 ```
 
-Every leaf folder has its own `README.md` stub noting what future module
-will fill it in, and an `__init__.py` marking it as a Python package.
-
 ## Language & tooling
 
-- **`core/` and `data/`**: Python — this is where feature engineering,
-  pattern matching, and other quantitative work will live, and it needs the
-  pandas/numpy/scikit-learn ecosystem down the line.
-- **`services/`**: Python as well, for MVP simplicity (no second
-  language/runtime until there's a concrete reason to add one). The eventual
-  API framework will be **FastAPI** — no endpoints exist yet.
-- **Package manager**: plain `pip` + a PEP 621 `pyproject.toml` (not Poetry).
-  At this stage there are no runtime dependencies and nothing is published,
-  so Poetry's lockfile/resolver machinery doesn't buy anything yet; this can
-  be revisited once `core/` and `data/` pick up real dependencies worth
-  pinning.
+- **`core/` and `data/`**: Python, with the pandas/numpy ecosystem for the
+  quantitative work (feature engineering, pattern matching, scoring).
+- **`services/`**: Python as well, all served over HTTP by **FastAPI**
+  (`services/terminal`, `services/public_stats`, `services/intelligence`,
+  `services/identity`, `services/telegram`) under a single ASGI entrypoint,
+  `infra/deploy/asgi.py`.
+- **Database**: PostgreSQL via SQLAlchemy 2.x, migrated with Alembic
+  (`infra/db/`).
+- **Package manager**: plain `pip` + a PEP 621 `pyproject.toml` (not Poetry) —
+  see the note at the bottom of `pyproject.toml` for why.
 - **Linting/formatting**: [`ruff`](https://docs.astral.sh/ruff/) for both
   lint and format, configured in `pyproject.toml`.
 - **Pre-commit**: `.pre-commit-config.yaml` runs ruff lint + format on every
   commit.
 - **CI**: `.github/workflows/ci.yml` installs dependencies, lints, and runs
-  the (currently empty) test suite. Nothing else — no deployment, no
-  database, no external services.
+  the test suite.
+- **Deployment**: Railway, one service per module boundary (scanner,
+  ingestion, telegram webhook + dispatch, terminal, public_stats,
+  intelligence, identity, retention, health) plus managed Postgres — see
+  `infra/deploy/README.md` and `.railway/railway.ts`.
 
 ## Dev environment setup
 
@@ -111,13 +158,42 @@ pre-commit install
 ruff check .
 ruff format --check .
 
-# 5. Run the (currently empty) test suite
+# 5. Run migrations against a local Postgres, then the test suite
+alembic -c infra/db/alembic.ini upgrade head
 pytest
 ```
 
 ## Status
 
-This is **Module 01 of a module-by-module build**. Nothing in this
-repository makes a network call, touches a database, or contains real
-business logic — see `docs/architecture/ARGUS_CONTEXT.md` for the full
-system context and module map.
+All 27 modules are built, with a deployable Docker image and Railway IaC
+covering every one of them (see `infra/deploy/`). Deployed is a narrower
+claim: as of this writing only three of the ten processes actually run on
+Railway — `terminal`, `public_stats` and `identity` — with the rest,
+including the scanner and ingestion, defined but not yet created as
+services (`infra/deploy/README.md`'s "Live state" section has the current
+count). A Phase 1 Integration Audit has run against the deployment
+(`docs/architecture/KNOWN_ISSUES.md`). What's tracked there as open, as of
+the audit and the fixes since:
+
+- **Corporate actions are never ingested** (splits/dividends) — `docs/architecture/KNOWN_ISSUES.md`
+  G2. Until this ships, an unadjusted split or dividend can distort a
+  security's price history silently.
+- **`get_config()` cannot be loaded in the deployed environment** — G3.
+  Every deployed service runs on a bare `DATABASE_URL`; one code path
+  (`infra/db/connection.py`) already works around it, but any other caller
+  of `get_config()` — including Module 26's ingestion cron — still crashes.
+  This is what currently blocks ingestion from running end-to-end in
+  production.
+- **The scanner cannot see the bars ingestion writes** — G1, **resolved**:
+  `scan_offset_hours` and `readiness_window_hours` in
+  `core/live_scanner/config.py` were misaligned with the bar-availability
+  lag and with each other; both are fixed, which also unblocks the
+  BREAKOUT_READY watchlist and the Module 27 Telegram bot's alerts.
+- **No universe has been built or set** in production yet
+  (`ARGUS_UNIVERSE_VERSION`), and ingestion needs a paid FMP API key — until
+  both are in place, there is nothing for the scanner to scan regardless of
+  G1/G3.
+
+See `docs/architecture/KNOWN_ISSUES.md` for the complete, audited list
+(severity, who found each item, and what fixing it looks like) rather than
+relying on this summary going stale again.
