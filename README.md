@@ -80,7 +80,8 @@ argus/
 │   │   ├── validation/
 │   │   └── evaluation/
 │   ├── live_scanner/                  # Module 18 — the scheduled scanner
-│   └── ingestion/                     # Module 26 — daily ingestion orchestration
+│   ├── ingestion/                     # Module 26 — daily ingestion orchestration
+│   └── news_signals/                  # Module 28 — reactive news-volume signal (display-only)
 ├── services/
 │   ├── terminal/                      # Module 19 — fundamentals/news, independent of scoring
 │   ├── watchlist/                     # User watchlists (query layer over core/market_state)
@@ -131,9 +132,9 @@ argus/
 - **CI**: `.github/workflows/ci.yml` installs dependencies, lints, and runs
   the test suite.
 - **Deployment**: Railway, one service per module boundary (scanner,
-  ingestion, telegram webhook + dispatch, terminal, public_stats,
-  intelligence, identity, retention, health) plus managed Postgres — see
-  `infra/deploy/README.md` and `.railway/railway.ts`.
+  ingestion, news_signals, telegram webhook + dispatch, terminal,
+  public_stats, intelligence, identity, retention, health) plus managed
+  Postgres — see `infra/deploy/README.md` and `.railway/railway.ts`.
 
 ## Dev environment setup
 
@@ -165,7 +166,7 @@ pytest
 
 ## Status
 
-All 27 modules are built, with a deployable Docker image and Railway IaC
+All 28 modules are built, with a deployable Docker image and Railway IaC
 covering every one of them (see `infra/deploy/`). Deployed is a narrower
 claim, and the number below is checked directly against Railway
 (`environment-status`, `list-services`) rather than copied from
@@ -173,14 +174,16 @@ claim, and the number below is checked directly against Railway
 prose, goes stale the moment a new service is created, and did: an
 earlier version of this file's Status section repeated a three-of-ten
 count from it that was already out of date by two modules' worth of
-services. As of 2026-09-04, checked directly: nine of the ten processes
-run on Railway and report zero issues — `terminal` (as `Argus`),
-`public_stats`, `identity`, `intelligence`, `health` and `telegram`
-online, `scanner`, `telegram_dispatch` and `retention` ready as cron.
-Only **`ingestion`** (Module 26) has no Railway service yet — see
-`infra/deploy/README.md`'s "Live state" section for detail, but verify
-against Railway directly before repeating a count from it again. A
-Phase 1 Integration Audit has run against the deployment
+services. As of 2026-09-04, checked directly: nine of the eleven
+processes `infra/deploy/processes.py` now defines run on Railway and
+report zero issues — `terminal` (as `Argus`), `public_stats`, `identity`,
+`intelligence`, `health` and `telegram` online, `scanner`,
+`telegram_dispatch` and `retention` ready as cron; `environment-status`
+still reports ten Railway services total (the nine plus Postgres).
+**`ingestion`** (Module 26) and **`news_signals`** (Module 28) have no
+Railway service yet — see `infra/deploy/README.md`'s "Live state" section
+for detail, but verify against Railway directly before repeating a count
+from it again. A Phase 1 Integration Audit has run against the deployment
 (`docs/architecture/KNOWN_ISSUES.md`). What's tracked there as open, as of
 the audit and the fixes since:
 

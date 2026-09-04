@@ -219,6 +219,24 @@ PROCESSES: dict[str, ProcessDefinition] = {
         schedule="0 3 * * *",
         description="Module 25. Prunes expired sessions; measures append-only growth.",
     ),
+    "news_signals": ProcessDefinition(
+        name="news_signals",
+        kind="cron",
+        module="infra.deploy.news_signals",
+        # 23:30 UTC on weekdays, thirty minutes after telegram_dispatch —
+        # last in the evening chain, since it reads canonical_news filled
+        # by ingestion's own tiered deep refresh, which runs after that
+        # cron's price pull with no fixed deadline. Unlike the other three
+        # crons this one has no hard ordering dependency on the scanner —
+        # it never imports core.market_state — so running last only
+        # gives the day's news the most time to have landed.
+        schedule="30 23 * * 1-5",
+        description=(
+            "Module 28. Reactive news-volume signal: unusually more canonical_news "
+            "today than this security's own trailing baseline. Display-only annotation "
+            "in services/intelligence; never read by scoring or market_state."
+        ),
+    ),
 }
 
 

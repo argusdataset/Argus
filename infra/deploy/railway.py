@@ -135,6 +135,7 @@ SERVICE_NAMES: dict[str, str] = {
     "scanner": "scanner",
     "telegram_dispatch": "telegram_dispatch",
     "retention": "retention",
+    "news_signals": "news_signals",
 }
 
 #: Variables each process needs that are secret. Named here, never valued:
@@ -152,6 +153,11 @@ SECRET_VARIABLES: dict[str, tuple[str, ...]] = {
     "scanner": ("FMP_API_KEY",),
     "telegram_dispatch": ("TELEGRAM_BOT_TOKEN",),
     "retention": (),
+    # Reads canonical_news, already filled by ingestion's own deep
+    # refresh, through nothing but the database connection — see
+    # core/news_signals/orchestrator.py on why this carries no G3 exposure
+    # and infra/deploy/news_signals.py on why it needs no secret at all.
+    "news_signals": (),
 }
 
 #: The four settings the IaC DSL has no field for, as data. Each entry is
@@ -226,11 +232,12 @@ def _env_lines(name: str, indent: str) -> list[str]:
         # N workers is N independent ceilings. config.py refuses to start a
         # production process with more than one and no shared store.
         lines.append(f'{indent}WEB_CONCURRENCY: "1",')
-    if name in {"ingestion", "scanner"}:
-        # Both raise ScannerNotReady rather than guessing a universe, and
-        # both read the same variable through the same function — bars
-        # ingested for one universe and coverage measured against another
-        # would be a silent, very confusing failure.
+    if name in {"ingestion", "scanner", "news_signals"}:
+        # All three raise ScannerNotReady rather than guessing a universe,
+        # and all three read the same variable through the same function —
+        # bars ingested, states classified and signals computed for one
+        # universe while another is what a reader sees would be a silent,
+        # very confusing failure.
         lines.append(f"{indent}ARGUS_UNIVERSE_VERSION: preserve(),")
     for variable in SECRET_VARIABLES[name]:
         lines.append(f"{indent}{variable}: preserve(),")

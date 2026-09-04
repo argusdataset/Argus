@@ -32,6 +32,7 @@ from core.market_state.states import WATCHLISTS
 from services.intelligence.schemas import (
     ExplanationBlock,
     IntelligenceProvenance,
+    NewsSignalBlock,
     RiskBlock,
     ScoreBlock,
     SimilarityBlock,
@@ -45,12 +46,24 @@ __all__ = [
     "NO_SIGNAL",
     "build_explanation",
     "build_freshness",
+    "build_news_signal",
     "build_risk",
     "build_score",
     "build_similarity",
     "build_state",
     "watchlists_for_state",
 ]
+
+_NEWS_SIGNAL_EXPLANATIONS: dict[str, str] = {
+    "never_ingested": (
+        "No news article has ever been recorded for this security, so there is no "
+        "history to measure today's volume against."
+    ),
+    "not_yet_available": (
+        "News coverage for this security has not been observed long enough to build a "
+        "trailing baseline yet."
+    ),
+}
 
 #: A security ARGUS has never scored. Distinct from one it scored and
 #: refused: nothing has looked at it yet.
@@ -256,6 +269,48 @@ def build_explanation(explanation: Any | None) -> ExplanationBlock:
         sections=payload.get("sections", []),
         omissions=payload.get("omissions", []),
         facts=payload.get("facts") or {},
+    )
+
+
+def build_news_signal(row: Any | None) -> NewsSignalBlock:
+    """Module 28's stored reading, reshaped. Never computed here.
+
+    A missing row and a stored `raised=None` both count as
+    "undetermined" and both get an `Unavailable` on the wire — a client
+    should not have to tell "ARGUS has not run this yet" apart from "ARGUS
+    ran this and could not tell". `raised` itself is passed through
+    exactly as stored, so a genuine `False` never gets relabelled either.
+    """
+    if row is None:
+        return NewsSignalBlock(
+            unavailable=Unavailable(
+                reason="not_yet_available",
+                explanation=("ARGUS has not computed a news-volume reading for this security yet."),
+            )
+        )
+
+    reason = row.unavailable_reason
+    return NewsSignalBlock(
+        raised=row.raised,
+        today_count=row.today_count,
+        baseline_mean=(float(row.baseline_mean) if row.baseline_mean is not None else None),
+        baseline_window_days=row.baseline_window_days,
+        multiple_threshold=(
+            float(row.multiple_threshold) if row.multiple_threshold is not None else None
+        ),
+        signal_date=row.signal_date,
+        unavailable=(
+            Unavailable(
+                reason=reason,
+                explanation=_NEWS_SIGNAL_EXPLANATIONS.get(
+                    reason,
+                    "ARGUS could not determine a news-volume reading for this security.",
+                ),
+            )
+            if reason
+            else None
+        ),
+        computed_at=row.computed_at,
     )
 
 

@@ -49,6 +49,9 @@ COMPUTATION_NAMES: frozenset[str] = frozenset(
         "compute_features_batch",
         "record_transitions",
         "advance_lifecycle",
+        "assess_news_volume",
+        "assess_batch",
+        "run_daily_news_signals",
     }
 )
 

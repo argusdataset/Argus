@@ -21,7 +21,7 @@ drifts from it.
 
 ## 1. What gets deployed
 
-Seven processes from one image. `infra/deploy/processes.py` is the single
+Eleven processes from one image. `infra/deploy/processes.py` is the single
 definition; this table is a reading of it.
 
 | Service        | Kind | Command                                          | Health check   | Schedule       |
@@ -36,6 +36,7 @@ definition; this table is a reading of it.
 | `scanner`      | cron | `python -m infra.deploy.scanner`                 | —              | `30 22 * * 1-5` |
 | `telegram_dispatch` | cron | `python -m infra.deploy.telegram_dispatch`  | —              | `0 23 * * 1-5` |
 | `retention`    | cron | `python -m infra.deploy.retention`               | —              | `0 3 * * *`    |
+| `news_signals` | cron | `python -m infra.deploy.news_signals`            | —              | `30 23 * * 1-5` |
 
 Only `identity` carries `preDeployCommand`. See §4.
 
@@ -585,31 +586,39 @@ generator, not an instruction.
 
 ### Live state, 2026-09-04
 
-Nine of the ten processes are deployed and healthy, confirmed directly
-against Railway rather than assumed from this file (`environment-status`,
-`list-services` — see the note below on why that check, not this section,
-is the source of truth going forward): `terminal` (as `Argus`),
-`public_stats`, `identity`, `intelligence`, `health` and `telegram` are
-`online`; `scanner`, `telegram_dispatch` and `retention` are `cronReady`.
-Zero issues, zero recent failures, across all nine.
+Nine of the eleven processes this file now defines are deployed and
+healthy, confirmed directly against Railway rather than assumed from this
+file (`environment-status`, `list-services` — see the note below on why
+that check, not this section, is the source of truth going forward):
+`terminal` (as `Argus`), `public_stats`, `identity`, `intelligence`,
+`health` and `telegram` are `online`; `scanner`, `telegram_dispatch` and
+`retention` are `cronReady`. Zero issues, zero recent failures, across all
+nine — `environment-status` still reports exactly ten Railway services
+total (the nine above plus Postgres), unchanged since Module 27.
 
-`ingestion` (Module 26) is the one process with no Railway service at
-all — so nothing has ever actually been ingested, `canonical_ohlcv` is
-still empty, and the scanner still has nothing to scan even now that its
-readiness check is no longer structurally broken (G1,
-`docs/architecture/KNOWN_ISSUES.md`, fixed): an empty table has zero
-coverage regardless of what cutoff is applied to it. No universe version
-has been built or set either (`ARGUS_UNIVERSE_VERSION`), so both the
-scanner and the not-yet-created `ingestion` process would refuse to run
-at all today. Create `ingestion` next, and expect it to hit G3 on its
-first real run (`get_config()` cannot be loaded in the deployed
-environment) — G3 has not yet been exercised in production, because the
-one process that would trigger it does not exist yet.
+`ingestion` (Module 26) and `news_signals` (Module 28) are the two
+processes with no Railway service at all yet — both added to
+`processes.py` after this project's last deploy. Nothing has ever
+actually been ingested, `canonical_ohlcv` is still empty, and the scanner
+still has nothing to scan even now that its readiness check is no longer
+structurally broken (G1, `docs/architecture/KNOWN_ISSUES.md`, fixed): an
+empty table has zero coverage regardless of what cutoff is applied to it.
+No universe version has been built or set either
+(`ARGUS_UNIVERSE_VERSION`), so the scanner and both not-yet-created
+processes would refuse to run at all today. Create `ingestion` first —
+`news_signals` reads `canonical_news`, which only `ingestion`'s deep
+refresh fills, so deploying `news_signals` before `ingestion` would give
+it a real universe to assess and nothing in it to count. Expect
+`ingestion` to hit G3 on its first real run (`get_config()` cannot be
+loaded in the deployed environment) — G3 has not yet been exercised in
+production, because the one process that would trigger it does not exist
+yet; `news_signals` does not carry that exposure at all (see
+`core/news_signals/orchestrator.py`).
 
 The other nine build from the Dockerfile, run the production profile,
 and carry the health check, restart policy and — on `identity` — the
 pre-deploy migration. A `railway config plan` should therefore report
-little or nothing to change on those nine, and one service to create.
+little or nothing to change on those nine, and two services to create.
 
 **A note on how this section goes stale, since it already has once.**
 This file previously said three of ten were live, written before Module

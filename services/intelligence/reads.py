@@ -42,8 +42,11 @@ from infra.db.schema.intelligence import (
     pending_material_events,
     signals,
 )
+from infra.db.schema.news_signals import news_volume_signals
 
 __all__ = [
+    "latest_news_signal",
+    "latest_news_signals",
     "latest_signal",
     "latest_similarity",
     "pending_events",
@@ -174,6 +177,49 @@ def latest_similarity(connection: Connection, security_id: UUID) -> dict[str, di
             "outcome_by_regime": row.outcome_by_regime,
             "computed_at": row.computed_at,
         }
+    return latest
+
+
+def latest_news_signal(connection: Connection, security_id: UUID) -> Any | None:
+    """This security's most recent stored `news_volume_signals` row.
+
+    Module 28 writes at most one row per `(security_id, signal_date)` and
+    upserts on a same-day rerun, so "most recent" means highest
+    `signal_date` rather than deduplicating anything here. Nothing is
+    recomputed: `raised` is served exactly as Module 28 wrote it, including
+    the `None` it uses for "not enough history yet" — this function must
+    never turn that into `False`.
+    """
+    return connection.execute(
+        select(news_volume_signals)
+        .where(news_volume_signals.c.security_id == security_id)
+        .order_by(desc(news_volume_signals.c.signal_date))
+        .limit(1)
+    ).one_or_none()
+
+
+def latest_news_signals(connection: Connection, security_ids: list[UUID]) -> dict[UUID, Any]:
+    """The most recent row per security, in one query.
+
+    Same one-query-for-many shape as `watchlists.py`'s `_tickers`: a
+    watchlist can hold hundreds of entries and a per-entry lookup would
+    turn one page load into hundreds of round trips. Rows come back
+    ordered newest-first per security and only the first one kept per
+    `security_id`, the same "first write wins, in order" idiom
+    `latest_similarity` already uses for `historical_similarity_results`.
+    """
+    if not security_ids:
+        return {}
+
+    rows = connection.execute(
+        select(news_volume_signals)
+        .where(news_volume_signals.c.security_id.in_(security_ids))
+        .order_by(desc(news_volume_signals.c.signal_date))
+    ).all()
+
+    latest: dict[UUID, Any] = {}
+    for row in rows:
+        latest.setdefault(row.security_id, row)
     return latest
 
 

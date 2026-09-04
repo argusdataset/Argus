@@ -60,6 +60,16 @@ An entry shows what ARGUS thinks — `argus_score`, `confidence`,
 `opportunity_score`, `risk_score`, `probability`. Revenue and P/E belong
 to the Terminal, which is a different question about the same company. An
 AST test asserts nothing here can reach a fundamentals read.
+
+## `news_signal_raised` changes nothing above it
+
+Module 28's reading is looked up after `watchlist()` has already decided
+membership and after each entry's state and score are already built, and
+it is attached to the entry as one more field — never as a filter, a
+sort key, or an input to anything computed above. A security with no
+stored reading gets `None`, the same "undetermined" value Module 28 uses
+internally, and appears on the list exactly as it would if this lookup
+were deleted entirely.
 """
 
 from __future__ import annotations
@@ -75,7 +85,12 @@ from infra.db.schema.identity import security_identity, security_ticker_history
 from infra.db.schema.setups import setup_outcomes, setups
 from services.intelligence.blocks import build_freshness, build_score
 from services.intelligence.errors import UNKNOWN_WATCHLIST, IntelligenceError
-from services.intelligence.reads import latest_signal, state_row, transitions_for
+from services.intelligence.reads import (
+    latest_news_signals,
+    latest_signal,
+    state_row,
+    transitions_for,
+)
 from services.intelligence.schemas import IntelligenceEntry, IntelligenceWatchlist, PhaseTransition
 
 __all__ = ["CONFIRMED_MOVES_WATCHLIST", "WATCHLIST_NAMES", "read_watchlist"]
@@ -115,6 +130,12 @@ def read_watchlist(
 
     include_lineage = name == CONFIRMED_MOVES_WATCHLIST
     tickers = _tickers(connection, shown, as_of=as_of)
+    # Module 28's readings, in one query rather than one per entry — see
+    # `_tickers` on why a per-row lookup does not scale to a full list.
+    # Purely additive: a security absent here still appears with
+    # `news_signal_raised=None`, and nothing about membership or score
+    # above depends on this lookup at all.
+    news_signals = latest_news_signals(connection, shown)
     entries: list[IntelligenceEntry] = []
     for security_id in shown:
         state = state_row(connection, security_id)
@@ -136,6 +157,9 @@ def read_watchlist(
                     _phase_history(connection, security_id) if include_lineage else None
                 ),
                 mfe=_current_mfe(connection, security_id) if include_lineage else None,
+                news_signal_raised=(
+                    news_signals[security_id].raised if security_id in news_signals else None
+                ),
             )
         )
 

@@ -37,7 +37,7 @@ a complete answer with Module 16's narration attached, not a stub.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -54,6 +54,7 @@ __all__ = [
     "IntelligenceEntry",
     "IntelligenceProvenance",
     "IntelligenceWatchlist",
+    "NewsSignalBlock",
     "OverlayResponse",
     "RiskBlock",
     "ScoreBlock",
@@ -158,6 +159,10 @@ class IntelligenceEntry(BaseModel):
     score: ScoreBlock
     phase_history: list[PhaseTransition] | None = None
     mfe: float | None = None
+    #: Module 28's tri-state reading, or `None` when nothing has been
+    #: computed for this security yet. Purely additive: absent or `None`
+    #: changes nothing else about this entry's state or score.
+    news_signal_raised: bool | None = None
 
 
 class IntelligenceWatchlist(BaseModel):
@@ -242,6 +247,31 @@ class StateBlock(BaseModel):
     )
 
 
+class NewsSignalBlock(BaseModel):
+    """Module 28's reactive news-volume reading. Display-only, additive.
+
+    `raised` carries the same three states Module 28 computes:
+    `True` (today's `canonical_news` volume cleared the baseline
+    multiple), `False` (measured, not raised), and `None` — never coerced
+    to `False` — for "not enough history yet", named in `unavailable`.
+
+    This block has no bearing on `state`, `score`, or any watchlist
+    membership above it: Module 28 is not imported by `core/scoring/`,
+    `core/market_state/`, `core/candidate_detection/eligibility/` or
+    `core/live_scanner/`, and a structural test asserts none of them do.
+    A security can be `BREAKOUT_READY` with this block entirely absent.
+    """
+
+    raised: bool | None = None
+    today_count: int | None = None
+    baseline_mean: float | None = None
+    baseline_window_days: int | None = None
+    multiple_threshold: float | None = None
+    signal_date: date | None = None
+    unavailable: Unavailable | None = None
+    computed_at: datetime | None = None
+
+
 class ExplanationBlock(BaseModel):
     """Module 16's output, passed through unchanged.
 
@@ -292,6 +322,9 @@ class SecurityDetail(BaseModel):
     similarity: SimilarityBlock
     risk: RiskBlock
     explanation: ExplanationBlock
+    #: Module 28's reactive news-volume reading. Additive only — see the
+    #: block's own docstring for the non-interference guarantee.
+    news_signal: NewsSignalBlock
     freshness: Freshness
 
 
