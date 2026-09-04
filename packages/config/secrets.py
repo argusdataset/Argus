@@ -125,21 +125,27 @@ def bootstrap_secrets_provider() -> SecretsProvider:
     """A provider that works before `AppConfig` is known to be loadable.
 
     `get_secrets_provider` reads `cfg.secrets.dotenv_path`, so it needs a
-    valid `AppConfig` — and a deployment supplying only `DATABASE_URL`
-    does not have one, because `AppConfig.database` is required and a
-    connection string satisfies none of its discrete fields. That is not
-    hypothetical: `infra/db/connection.py` records it as exactly how
-    ARGUS's first Railway deploy crashed, and every deployed service
-    still runs with `DATABASE_URL` and nothing else.
+    valid `AppConfig`. This existed because a deployment supplying only
+    `DATABASE_URL` did not have one: `AppConfig.database` was required and
+    a connection string satisfied none of its discrete fields — G3 in
+    `docs/architecture/KNOWN_ISSUES.md`, and exactly how ARGUS's first
+    Railway deploy crashed.
 
-    So a caller that needs a secret *before* it can be sure the config
-    loads uses this: the default chain (`.env`, then the process
+    **G3 is now fixed at the root.** `AppConfig` derives the `database`
+    group from `DATABASE_URL`, so in a deployment that supplies one this
+    function's fallback no longer fires — `get_secrets_provider()` simply
+    succeeds and returns the same chain. It is kept rather than deleted
+    because the guarantee it makes is broader than that one cause: a
+    caller needing a secret before it can be *sure* the config loads
+    still has a way to get one, whatever makes the config unloadable
+    (a malformed value, a missing group with no URL to derive it from).
+
+    The fallback is the default chain (`.env`, then the process
     environment) with the default dotenv path, which is what
     `get_secrets_provider` would have produced anyway in every deployment
     that has not overridden `ARGUS_SECRETS__DOTENV_PATH`.
 
     Prefer `get_secrets_provider` wherever a config is already in hand.
-    This exists for the ordering problem, not as a shortcut around it.
     """
     try:
         return get_secrets_provider()

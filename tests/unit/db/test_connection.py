@@ -249,11 +249,25 @@ def test_no_discrete_setting_is_required_when_a_url_is_supplied(platform_environ
 
     A deployment should not have to restate in four variables what one
     variable already says — and if it did, the two could disagree.
-    """
-    with pytest.raises(ValidationError):
-        AppConfig()
 
-    assert build_database_url() is not None
+    This test used to assert that `AppConfig()` *raised* here, and that
+    `build_database_url` worked anyway by resolving the URL before
+    validating. That was the workaround, not the property: it made this
+    one function survive an environment in which `get_config()` was still
+    unloadable for everybody else, which is what G3 in
+    `docs/architecture/KNOWN_ISSUES.md` catalogued. Since G3 was fixed at
+    the root, `DATABASE_URL` is a real source for the `database` group,
+    so the config loads too and both paths agree on the same server.
+    """
+    config = AppConfig()
+    assert config.database.host == "db.railway.internal"
+    assert config.database.name == "railway"
+    assert config.database.user == "argus"
+
+    url = build_database_url()
+    assert url.host == config.database.host
+    assert url.database == config.database.name
+    assert url.username == config.database.user
 
 
 def test_the_engine_is_constructible_from_a_supplied_url_alone(platform_environment):

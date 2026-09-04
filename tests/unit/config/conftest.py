@@ -15,10 +15,18 @@ REQUIRED_DB_ENV = {
 
 @pytest.fixture(autouse=True)
 def _isolated_config_env(monkeypatch):
-    """Clear ARGUS_* env vars and the get_config cache around every test."""
+    """Clear ARGUS_* env vars and the get_config cache around every test.
+
+    `DATABASE_URL` is cleared too, and not only for tidiness: since G3 was
+    fixed it is a genuine source for the `database` group, so a machine
+    that happens to export one would silently satisfy the very fields the
+    "missing database group raises" tests exist to check. A test whose
+    result depends on the developer's shell is not a test.
+    """
     for key in list(os.environ):
         if key.startswith("ARGUS_"):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     get_config.cache_clear()
     yield
     get_config.cache_clear()

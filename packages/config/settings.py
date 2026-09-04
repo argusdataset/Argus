@@ -15,17 +15,112 @@ Secret VALUES (database passwords, the FMP API key, ...) are never fields
 on this object — see secrets.py. AppConfig only ever holds settings *about*
 secret resolution (e.g. where the local .env file is), never a secret
 itself, so it's always safe to log or repr.
+
+## `DATABASE_URL` is a first-class source for the `database` group
+
+Hosting platforms hand out one connection string, not four discrete
+fields: Railway, Fly, Heroku and the rest inject `DATABASE_URL`. Until
+this was addressed, `AppConfig.database` was a required group that a
+connection string satisfied none of, so `get_config()` raised a
+`ValidationError` in every deployed process — recorded as G3 in
+`docs/architecture/KNOWN_ISSUES.md`, and reproduced there as:
+
+    env -i DATABASE_URL=... ARGUS_ENV=production python -c "
+        from data.provider_adapters.fmp.client import FmpClient; FmpClient()"
+    ValidationError: 1 validation error for AppConfig
+    database
+      Field required
+
+Two modules worked around it locally — `infra/db/connection.py` and, via
+`bootstrap_secrets_provider()`, `services/telegram/app.py` — but a
+workaround per call site is not a fix: any *new* code path calling
+`get_config()` walked into the same wall, and Module 26's ingestion cron
+was about to.
+
+So `host`, `port`, `name` and `user` are now derived from `DATABASE_URL`
+when it is set, field by field, and **explicit `ARGUS_DATABASE__*` values
+still win** over anything the URL implies. The password embedded in the
+connection string is deliberately *not* read: `DatabaseSettings` has no
+password field, and the "always safe to log" invariant above depends on
+that staying true. The credential continues to be resolved at connection
+time through `SecretsProvider`, exactly as before.
+
+Read from `os.environ` rather than from a `.env` file, which is the one
+place this diverges from `ChainedSecretsProvider`'s ".env first" order.
+Two reasons: a developer running against a local Postgres already has the
+discrete `ARGUS_DATABASE__*` path, and reading `.env` here would widen the
+blast radius of B1 (a local `.env` leaking past the test suite's env
+isolation) to a field that decides whether config loads at all.
 """
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from packages.config.environment import Environment
 from packages.config.execution import ExecutionMode
+
+#: The variable hosting platforms inject. Not `ARGUS_`-prefixed because
+#: that is not what platforms emit, and renaming it at the boundary would
+#: mean every deployment needed a mapping step.
+DATABASE_URL_ENV_VAR = "DATABASE_URL"
+
+#: Assumed when a connection string omits the port. PostgreSQL's own
+#: default, and the only value a URL without one can mean.
+DEFAULT_POSTGRES_PORT = 5432
+
+#: Schemes a connection string may use. `postgres://` is the legacy form
+#: some platforms still emit.
+_POSTGRES_SCHEMES = ("postgresql", "postgres")
+
+
+def database_settings_from_url(raw: str) -> dict[str, Any]:
+    """The `database` fields a connection string implies, or `{}`.
+
+    Deliberately partial and deliberately forgiving. A URL that names no
+    database or no user yields a dict missing those keys, so the ordinary
+    "Field required" error still surfaces for them — inventing a default
+    database name would be worse than the crash it replaced.
+
+    Parsed with `urllib.parse` rather than SQLAlchemy's `make_url`, which
+    would make `packages/config` — the lowest layer in the project —
+    depend on the database toolkit. The standard library is enough:
+    percent-encoded credentials are decoded, query parameters
+    (`?sslmode=require`) are ignored, and a malformed URL returns `{}`
+    rather than raising, because a bad `DATABASE_URL` should surface as
+    the config error it is and not as a parse traceback from inside a
+    validator.
+    """
+    try:
+        parsed = urlsplit(raw.strip())
+    except ValueError:
+        return {}
+
+    scheme = parsed.scheme.split("+", 1)[0]
+    if scheme not in _POSTGRES_SCHEMES:
+        return {}
+
+    derived: dict[str, Any] = {}
+    try:
+        port = parsed.port
+    except ValueError:  # non-numeric port in the URL
+        return {}
+
+    if parsed.hostname:
+        derived["host"] = parsed.hostname
+    derived["port"] = port or DEFAULT_POSTGRES_PORT
+    name = unquote(parsed.path.lstrip("/"))
+    if name:
+        derived["name"] = name
+    if parsed.username:
+        derived["user"] = unquote(parsed.username)
+    return derived
 
 
 class DatabaseSettings(BaseModel):
@@ -130,6 +225,46 @@ class AppConfig(BaseSettings):
     execution: ExecutionSettings = ExecutionSettings()
     logging: LoggingSettings = LoggingSettings()
     secrets: SecretsSettings = SecretsSettings()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_database_from_connection_string(cls, values: Any) -> Any:
+        """Derive the `database` group from `DATABASE_URL`, if it is set.
+
+        `mode="before"` because `database` is a required field: by the
+        time an "after" validator could run, validation has already
+        failed with the very error this exists to prevent.
+
+        Merged field by field with explicit settings winning, rather than
+        all-or-nothing. A deployment that supplies `DATABASE_URL` and
+        overrides only `ARGUS_DATABASE__NAME` — pointing one service at a
+        second database on the same server — gets exactly that, instead
+        of having to restate every field to change one.
+
+        The URL is not stored anywhere on the returned object. Only the
+        four non-secret fields are taken from it; the password stays in
+        the environment and is resolved at connection time through
+        `SecretsProvider`, so this object remains safe to log.
+        """
+        if not isinstance(values, dict):
+            return values
+
+        raw = os.environ.get(DATABASE_URL_ENV_VAR, "")
+        if not raw.strip():
+            return values
+
+        derived = database_settings_from_url(raw)
+        if not derived:
+            return values
+
+        supplied = values.get("database")
+        if isinstance(supplied, DatabaseSettings):
+            supplied = supplied.model_dump()
+        if not isinstance(supplied, dict):
+            supplied = {}
+
+        merged = {**derived, **{key: value for key, value in supplied.items() if value is not None}}
+        return {**values, "database": merged}
 
 
 @lru_cache(maxsize=1)

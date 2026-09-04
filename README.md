@@ -191,13 +191,14 @@ the audit and the fixes since:
   G2. Until this ships, an unadjusted split or dividend can distort a
   security's price history silently.
 - **`get_config()` cannot be loaded in the deployed environment** — G3,
-  still open and **not yet exercised in production**. Every deployed
-  service runs on a bare `DATABASE_URL`; one code path
-  (`infra/db/connection.py`) already works around it, but any other caller
-  of `get_config()` — including Module 26's ingestion cron — still
-  crashes. Untested against real traffic only because `ingestion` is the
-  one process this would hit and it has not been created on Railway yet;
-  expect it to surface the moment it is.
+  **resolved** at the root rather than per call site: `AppConfig` now
+  derives its `database` group from the bare `DATABASE_URL` every
+  deployed service runs on (`packages/config/settings.py`), with explicit
+  `ARGUS_DATABASE__*` values still winning field by field and the
+  password still resolved through `SecretsProvider`, never stored on the
+  config object. The entry's own repro is now a regression test that runs
+  in a scrubbed subprocess. This was the last thing standing between the
+  `ingestion` cron and its first real run.
 - **The scanner cannot see the bars ingestion writes** — G1, **resolved**:
   `scan_offset_hours` and `readiness_window_hours` in
   `core/live_scanner/config.py` were misaligned with the bar-availability
@@ -208,8 +209,8 @@ the audit and the fixes since:
   say yes to.
 - **No universe has been built or set** in production yet
   (`ARGUS_UNIVERSE_VERSION`), and ingestion needs a paid FMP API key — until
-  both are in place, there is nothing for the scanner to scan regardless of
-  G1/G3.
+  both are in place, there is nothing for the scanner to scan, whatever
+  G1 and G3 now allow.
 
 See `docs/architecture/KNOWN_ISSUES.md` for the complete, audited list
 (severity, who found each item, and what fixing it looks like) rather than

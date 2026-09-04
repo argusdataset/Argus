@@ -25,12 +25,12 @@ place, and there is no second path to audit.
 
 ### And it is resolved *first*
 
-`AppConfig` requires `database.port`, `database.name` and
-`database.user`. A platform that injects `DATABASE_URL` injects none of
-them — the connection string is the configuration, as far as it is
-concerned. So loading and validating the config before looking for a
-supplied URL made the supplied-URL path unreachable on precisely the
-platforms it exists for.
+`AppConfig` used to require `database.port`, `database.name` and
+`database.user` unconditionally. A platform that injects `DATABASE_URL`
+injects none of them — the connection string is the configuration, as far
+as it is concerned. So loading and validating the config before looking
+for a supplied URL made the supplied-URL path unreachable on precisely
+the platforms it exists for.
 
 That is not hypothetical. ARGUS's first Railway deploy crashed on it:
 
@@ -43,6 +43,16 @@ That is not hypothetical. ARGUS's first Railway deploy crashed on it:
 sitting in the environment two lines further down. `_bootstrap_secrets`
 is what fixes the ordering, and it is careful to leave the error intact
 for the case where the config really is incomplete.
+
+**Since G3 was fixed, the ordering is no longer load-bearing here.**
+`AppConfig` now derives the `database` group from `DATABASE_URL` itself
+(`packages/config/settings.py`), so `get_config()` succeeds in exactly
+the environment that used to break it, and the two paths agree on the
+same server — a test in `tests/unit/db/test_connection.py` asserts they
+do. The resolve-first ordering is kept anyway: a supplied connection
+string is the more direct answer to "which database", it carries the
+password this module needs regardless, and reversing the order now would
+be a behaviour change with nothing to gain.
 """
 
 from __future__ import annotations
