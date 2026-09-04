@@ -205,7 +205,11 @@ def test_a_second_catchup_after_new_dates_appear_scans_only_the_new_ones(
 ):
     _universe_through(connection, register, lineage)
     config = _narrow(days=6.0)
-    earlier = datetime(2021, 3, 2, 12, 0, tzinfo=UTC)
+    # Past `PREVIOUS_DATE`'s own `due_at` (2021-03-02 14:00 UTC at the
+    # default seventeen-hour offset) but before `SCAN_DATE`'s (the next
+    # day, same clock time) — so the most recent date due is Monday, and
+    # Tuesday is still `earlier`'s "new" date the second run picks up.
+    earlier = datetime(2021, 3, 2, 18, 0, tzinfo=UTC)
 
     first = run_catchup(connect, now=earlier, lineage=lineage, modules=modules, config=config)
     already = {outcome.scan_date for outcome in first.outcomes}

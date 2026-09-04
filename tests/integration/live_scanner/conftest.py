@@ -53,7 +53,15 @@ PREVIOUS_DATE = date(2021, 3, 1)
 #: Far enough back to fill Module 08's 252-bar maximum lookback.
 HISTORY_START = datetime(2019, 1, 2, tzinfo=UTC)
 #: A wall-clock instant comfortably after both dates' scan times.
-NOW = datetime(2021, 3, 3, 12, 0, tzinfo=UTC)
+#:
+#: `SCAN_DATE`'s own `due_at` (its session close plus `scan_offset_hours`)
+#: is 2021-03-03 14:00 UTC at the default seventeen-hour offset — later
+#: in the day than it once was, back when the offset was five. 18:00
+#: leaves four hours of margin past it while staying inside the
+#: readiness window (which closes at 21:00 UTC the same day), so `NOW`
+#: still names an instant both dates are due, not merely `SCAN_DATE`'s
+#: own day.
+NOW = datetime(2021, 3, 3, 18, 0, tzinfo=UTC)
 
 
 @pytest.fixture

@@ -15,17 +15,29 @@ setting it wrong either scans a half-empty universe or waits forever.
 ## The timing decision, and why it is designed to tolerate being wrong
 
 `scan_offset_hours` says how long after the session close to first ask
-whether the data is ready. Five hours (21:00 ET) is a guess, and it is a
-guess about somebody else's delivery schedule, which is not a thing to
-guess about confidently.
+whether the data is ready. It has to be more than a guess about a
+provider's delivery schedule now: it is also the earliest instant a bar
+Module 05 wrote can be *knowable* to this scanner at all, because
+`readiness.py` filters on `availability_time <= as_of` and Module 05
+derives a daily bar's `availability_time` as the session close plus
+`ProviderLagPolicy.daily_bar` (16 hours — see `data/canonical_model/pit.py`).
+An offset shorter than that lag is not a guess that costs a retry; it is
+a ceiling nothing written under that lag can ever pass, however many
+retries follow. Seventeen hours — one past the lag — is the smallest
+offset that does not have that property, so the readiness check remains
+the actual gate rather than a foregone conclusion. See
+`docs/architecture/KNOWN_ISSUES.md` G1, RESOLVED, for how this was found:
+every fixture that exercised readiness used a materially shorter lag than
+production ever writes, so the gap between what was tested and what was
+deployed passed silently.
 
 So the schedule is not the gate. The **readiness check** is: the scanner
 asks whether the data is actually there, and if it is not, records
 DATA_NOT_READY and asks again `retry_interval_minutes` later, up to
-`readiness_window_hours`. Being wrong about the offset therefore costs a
-retry, not a missed day — which is the property worth designing for,
-because the alternative is a scanner whose correctness depends on a
-provider's SLA staying what it was.
+`readiness_window_hours`. Being wrong about the offset — within the floor
+above — costs a retry, not a missed day, which is the property worth
+designing for, because the alternative is a scanner whose correctness
+depends on a provider's SLA staying what it was.
 """
 
 from __future__ import annotations
@@ -77,15 +89,22 @@ class ScannerSettings:
     # -- Scheduling ---------------------------------------------------------
     scan_offset_hours: ScannerSetting = field(
         default_factory=lambda: _s(
-            5.0,
+            17.0,
             OPERATIONAL,
             "Hours after the 16:00 ET session close before the scanner "
-            "first asks whether the day's data has arrived — 21:00 ET. A "
-            "guess about a provider's delivery schedule, which is why the "
-            "readiness check rather than this number is the actual gate: "
-            "being wrong here costs a retry, not a missed day. Operational "
+            "first asks whether the day's data has arrived — 09:00 ET the "
+            "next morning. Floored at one past Module 05's own "
+            "`ProviderLagPolicy.daily_bar` (16 hours): `readiness.py` "
+            "filters on `availability_time <= as_of`, so an offset at or "
+            "under that lag is not a guess that costs a retry, it is a "
+            "ceiling no bar Module 05 writes can ever pass — the scanner "
+            "would record DATA_NOT_READY forever regardless of how many "
+            "retries followed. Past that floor, the remaining slack is "
+            "still an ordinary guess about a provider's delivery schedule, "
+            "and the readiness check is still the actual gate: being wrong "
+            "within the floor costs a retry, not a missed day. Operational "
             "because `as_of` is derived from the session close, so a scan "
-            "started at 21:00 and one started at 23:00 compute identically.",
+            "started at 09:00 and one started at 11:00 compute identically.",
         )
     )
     retry_interval_minutes: ScannerSetting = field(
@@ -101,14 +120,23 @@ class ScannerSettings:
     )
     readiness_window_hours: ScannerSetting = field(
         default_factory=lambda: _s(
-            12.0,
+            24.0,
             OPERATIONAL,
             "How long after the session close the scanner keeps waiting "
-            "for data before the day stops being 'not ready yet'. Twelve "
-            "hours reaches 04:00 ET the next morning; past that the data "
-            "is not late, something is wrong, and continuing to record "
-            "DATA_NOT_READY would be the scanner going quietly dark while "
-            "looking busy.",
+            "for data before the day stops being 'not ready yet'. Must "
+            "exceed `scan_offset_hours`, structurally rather than by "
+            "convention: `due_at` is the close plus the offset and "
+            "`expires_at` is the close plus this window, and "
+            "`next_scan_time` treats a date whose `due_at` has already "
+            "passed its own `expires_at` as broken on the very first "
+            "check, with no retry ever attempted. Twenty-four hours "
+            "reaches 16:00 ET the next session close — a full day of "
+            "margin past the 09:00 ET first check — which was widened "
+            "from twelve specifically to restore that margin when the "
+            "offset moved past Module 05's bar-availability lag (see "
+            "`scan_offset_hours`). Past this window the data is not late, "
+            "something is wrong, and continuing to record DATA_NOT_READY "
+            "would be the scanner going quietly dark while looking busy.",
         )
     )
 

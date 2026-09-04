@@ -25,11 +25,11 @@ Module 10, whose boundary this module was told not to cross.
 **The date bracket.** A live scan stamps every transition with the scan's
 `as_of`, which is `session_close + scan_offset_hours`. Matching that
 instant exactly would be more precise and would break the day somebody
-changes the offset — which is a change `docs/architecture/KNOWN_ISSUES.md`
-G1 says has to happen. So the query brackets
-`[session_close(scan_date), session_close(scan_date) + 24h)`, which holds
-for any offset a daily scanner could sanely use, and states the
-assumption instead of hiding it.
+changes the offset — which is exactly what happened once already, when
+`docs/architecture/KNOWN_ISSUES.md` G1's fix moved it from 5 to 17. So the
+query brackets `[session_close(scan_date), session_close(scan_date) +
+24h)`, which holds for any offset a daily scanner could sanely use, and
+states the assumption instead of hiding it.
 
 ## Idempotency
 

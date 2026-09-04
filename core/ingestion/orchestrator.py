@@ -37,16 +37,21 @@ module's own invention: the only opinion that matters is the one the
 scanner will act on, and asking the scanner's own question is the only
 way to be sure the answer is yes.
 
-**And today the answer is no, for a reason outside this module.** Module
-05 derives a daily bar's `availability_time` as the session close plus
-sixteen hours; Module 18's PIT cutoff for that same session is the close
-plus five (`scan_offset_hours`). Sixteen is greater than five, so a bar
-this module writes is not yet *knowable* at the cutoff the readiness
-check applies, and coverage reads as zero however complete the ingestion
-was. The fix is one number in Module 18's config, which this module was
-told not to touch — see `core/ingestion/README.md`, which sets out the
-arithmetic, and `tests/integration/ingestion/test_readiness_handoff.py`,
-which pins both halves of it.
+**For a while the answer was no, for a reason outside this module.**
+Module 05 derives a daily bar's `availability_time` as the session close
+plus sixteen hours; Module 18's PIT cutoff for that same session was the
+close plus five (`scan_offset_hours`). Sixteen is greater than five, so a
+bar this module wrote was not yet *knowable* at the cutoff the readiness
+check applied, and coverage read as zero however complete the ingestion
+was. The fix was one number in Module 18's config — `scan_offset_hours`
+raised to seventeen, one past the bar lag, with `readiness_window_hours`
+raised alongside it so the retry margin the offset spends did not go
+with it (see `core/live_scanner/config.py`'s own rationale text for both).
+This module was told not to touch that file, so the finding is recorded
+in `docs/architecture/KNOWN_ISSUES.md` G1 (RESOLVED) and in
+`core/ingestion/README.md`, which sets out the arithmetic, and
+`tests/integration/ingestion/test_readiness_handoff.py`, which pins the
+fix against a real ingested day.
 """
 
 from __future__ import annotations

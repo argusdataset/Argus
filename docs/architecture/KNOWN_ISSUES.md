@@ -584,54 +584,71 @@ one might not.
 
 ---
 
-### G1. The scanner cannot see the bars ingestion writes — **OPEN, HIGH**
+### G1. The scanner cannot see the bars ingestion writes — **RESOLVED**
 
 Module 26 closed the gap where nothing wrote to `canonical_ohlcv`. It did
-not make the scanner able to act on what it writes, and the reason is two
+not make the scanner able to act on what it writes, and the reason was two
 numbers in two other modules.
 
 - Module 05 derives a daily bar's `availability_time` as its session
   close **plus 16 hours** (`ProviderLagPolicy.daily_bar`). Deliberately
   conservative: FMP publishes EOD within hours, but consolidated values
   settle overnight.
-- Module 18's point-in-time cutoff for scanning that same session is its
+- Module 18's point-in-time cutoff for scanning that same session was its
   close **plus 5 hours** (`scan_offset_hours`).
 
 `readiness.check_readiness` filters on `availability_time <= as_of`, and
-16 > 5. So a bar is never knowable at the cutoff applied to it, coverage
-reads zero however complete the ingestion, and the scanner records
+16 > 5. So a bar was never knowable at the cutoff applied to it, coverage
+read zero however complete the ingestion, and the scanner recorded
 `DATA_NOT_READY` forever — the same outcome as before Module 26 existed,
 reached a different way.
 
 **Why it was invisible.** Module 18's integration fixtures
 (`tests/integration/feature_engine/conftest.py::insert_bars`) use a
 **one-hour** availability lag, fifteen hours more optimistic than what
-Module 05 stamps in production. Every readiness test has always passed
-against a bar no production path can produce. This is the same shape as
-A3 and A4 below: the guarantee is not broken, the test that would catch
+Module 05 stamps in production. Every readiness test had always passed
+against a bar no production path could produce. This is the same shape as
+A3 and A4 below: the guarantee was not broken, the test that would catch
 it breaking never exercised the real path.
 
-**The fix is one number.** `scan_offset_hours` must exceed the bar
-availability lag — 5 → 17 puts the cutoff an hour past it. Module 26's
-boundaries forbade modifying `core/live_scanner/`, so it is flagged here
-and *demonstrated* rather than applied:
-`tests/integration/ingestion/test_readiness_handoff.py` pins the
-arithmetic, pins the failure, and shows the change working against real
-ingested rows.
-
-**A second consequence, added by Module 27.** The Telegram bot alerts on
+**The consequence for Module 27.** The Telegram bot alerts on
 `BREAKOUT_READY` transitions, and transitions are written by the scan. A
 scanner that records `DATA_NOT_READY` records no transitions, so the bot
-has nothing to send and goes quiet with nothing failing. Fixing this one
-number is what turns Modules 18, 26 and 27 on together.
+had nothing to send and went quiet with nothing failing — the same
+watchlist Module 21's Intelligence surface reads live off `market_state`
+was equally starved, for the identical reason.
 
-**A second observation, smaller but related.** `scan_offset_hours` is
-tagged `operational`, whose stated meaning is "bounds how the computation
-runs, never what it produces", justified in Module 18's config by "a scan
-started at 21:00 and one at 23:00 compute identically". True of the
-computation, false of readiness: the number feeds `as_of`, and `as_of`
-decides what the scan can see. On Module 17's own definitions it is
-`calibratable`.
+**The fix, and the correction to how this entry first described it.**
+This entry originally said "the fix is one number" — `scan_offset_hours`,
+5 → 17, one hour past the bar's availability lag. That was necessary and
+incomplete: `core/live_scanner/schedule.py`'s `next_scan_time` treats a
+date whose `due_at` (session close + `scan_offset_hours`) has already
+passed its own `expires_at` (session close + `readiness_window_hours`,
+left at 12 in the original text) as broken on the very first check, with
+zero retries attempted. Raising the offset to 17 against an unchanged
+12-hour window would not have fixed `DATA_NOT_READY`-forever; it would
+have replaced it with a *different* permanent failure — every date marked
+broken on its first check instead — which is worse, because it also
+discards the retry margin the readiness design exists to provide. Both
+numbers had to move together: `scan_offset_hours` 5 → 17,
+`readiness_window_hours` 12 → 24. Applied in
+`core/live_scanner/config.py`, whose rationale text for both settings now
+carries this reasoning, and pinned by
+`tests/integration/ingestion/test_readiness_handoff.py`, which asserts
+the corrected relationship (`readiness_window_hours` still exceeds
+`scan_offset_hours`) as its own structural test rather than trusting the
+two literals to stay in the right order.
+
+**A second observation, still true.** `scan_offset_hours` is tagged
+`operational`, whose stated meaning is "bounds how the computation runs,
+never what it produces", justified in Module 18's config by "a scan
+started at 21:00 and one at 23:00 compute identically" — now "started at
+09:00 and one at 11:00", but the same claim. True of the computation,
+false of readiness: the number feeds `as_of`, and `as_of` decides what
+the scan can see. On Module 17's own definitions it is `calibratable`.
+The value has been fixed; the tag has not, and is left as noted rather
+than changed silently alongside a numeric fix this entry was already
+correcting once.
 
 ---
 
@@ -711,10 +728,10 @@ is deployed, or it will fail on its first real run.
 
 | Severity | Open | Deferred | Closed |
 |---|---|---|---|
-| HIGH | A1, A2 (Module 11 copy), C1, C3, G1, G2, G3 | — | — |
+| HIGH | A1, A2 (Module 11 copy), C1, C3, G2, G3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1 |
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were

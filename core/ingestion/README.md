@@ -170,31 +170,39 @@ asserts everything it watches is guarded — so its growth, bounded by the
 number of due securities per day, is watched by nobody. Flagged, not
 fixed.
 
-## Two things this module could not fix
+## One thing this module could not fix, and has since been fixed elsewhere
 
-**1. The scanner still cannot see what this writes.** Module 05 stamps a
-daily bar's `availability_time` as its session close **+ 16 hours**;
-Module 18's point-in-time cutoff for that session is its close **+ 5**
-(`scan_offset_hours`). `check_readiness` filters on `availability_time <=
-as_of`, and 16 > 5, so coverage reads zero however complete the
-ingestion was. The scanner would go on recording `DATA_NOT_READY` — the
-same outcome as before this module existed, reached a different way.
+**The scanner used to be unable to see what this writes.** Module 05
+stamps a daily bar's `availability_time` as its session close **+ 16
+hours**; Module 18's point-in-time cutoff for that session was its close
+**+ 5** (`scan_offset_hours`). `check_readiness` filters on
+`availability_time <= as_of`, and 16 > 5, so coverage read zero however
+complete the ingestion was. The scanner would go on recording
+`DATA_NOT_READY` — the same outcome as before this module existed,
+reached a different way.
 
 Module 18's own fixtures insert bars with a **one-hour** availability
-lag, which is why every readiness test has always passed against a bar
-no production path can produce.
+lag, which is why every readiness test had always passed against a bar
+no production path could produce.
 
-The fix is one number: `scan_offset_hours` must exceed the bar lag, e.g.
-5 → 17. It belongs to `core/live_scanner/config.py`, which this module
-was told not to modify, so it is flagged — and demonstrated:
-`tests/integration/ingestion/test_readiness_handoff.py` pins the
-arithmetic, pins the failure, and shows the one-number change working.
+This module was told not to modify `core/live_scanner/config.py`, so the
+finding was flagged and demonstrated rather than fixed here:
+`tests/integration/ingestion/test_readiness_handoff.py` pinned the
+arithmetic, pinned the failure, and showed the one-number change working.
+It has since landed — `scan_offset_hours` 5 → 17, one past the bar lag,
+with `readiness_window_hours` 12 → 24 alongside it, because raising the
+offset alone would have moved the failure rather than removed it: a date
+whose `due_at` (close + offset) already exceeds its own `expires_at`
+(close + window) is declared broken on the *first* check, with zero
+retries. See `docs/architecture/KNOWN_ISSUES.md` G1 (RESOLVED) and
+`core/live_scanner/config.py`'s own rationale text for both numbers.
 
-Worth noting alongside it: `scan_offset_hours` is tagged `operational`,
-which claims a number "bounds how the computation runs, never what it
-produces". It feeds `as_of`, and `as_of` decides what a scan can see.
+Worth noting alongside it: `scan_offset_hours` is still tagged
+`operational`, which claims a number "bounds how the computation runs,
+never what it produces". It feeds `as_of`, and `as_of` decides what a
+scan can see. The value moved; the tag did not, and arguably should.
 
-**2. Corporate actions are never ingested.** Scope A is prices, scope B
+**Corporate actions are never ingested**, and remain unfixed. Scope A is prices, scope B
 is fundamentals and news. Nothing fetches splits or dividends on any
 schedule, and Module 08's `load_panel` builds its adjustment factors
 from `canonical_corporate_actions` at load time — so with that table

@@ -46,13 +46,13 @@ def test_the_cutoff_is_derived_from_the_session_close_not_from_now():
     second = as_of_for(TUESDAY)
 
     assert first == second
-    assert first == session_close(TUESDAY) + timedelta(hours=5)
+    assert first == session_close(TUESDAY) + timedelta(hours=17)
 
 
 def test_the_offset_is_configuration_and_moving_it_moves_the_cutoff():
     late = ScannerConfig(
         settings=ScannerSettings(
-            scan_offset_hours=ScannerSetting(value=9.0, kind="operational", rationale="test")
+            scan_offset_hours=ScannerSetting(value=21.0, kind="operational", rationale="test")
         )
     )
 
@@ -63,7 +63,7 @@ def test_a_scan_is_not_due_before_its_offset_has_elapsed():
     close = session_close(TUESDAY)
 
     assert not is_due(TUESDAY, close + timedelta(hours=1))
-    assert is_due(TUESDAY, close + timedelta(hours=6))
+    assert is_due(TUESDAY, close + timedelta(hours=18))
 
 
 def test_a_weekend_is_never_due():
@@ -88,12 +88,18 @@ def test_the_due_session_after_a_long_weekend_is_the_friday_before_it():
     assert scan_date_for(monday) == friday_after
 
 
-def test_nothing_is_due_on_a_tuesday_morning_before_the_offset():
+def test_nothing_is_due_on_a_tuesday_before_the_offset():
     """Tuesday's own session has not closed, and Monday's scan time has
-    passed — so the answer is Monday, not None and not Tuesday."""
-    tuesday_morning = datetime(2026, 3, 3, 12, 0, tzinfo=UTC)
+    passed — so the answer is Monday, not None and not Tuesday.
 
-    assert scan_date_for(tuesday_morning) == date(2026, 3, 2)
+    At the seventeen-hour offset, Monday's `due_at` lands at 14:00 UTC on
+    Tuesday — not "Tuesday morning" any more, which is why this asks about
+    mid-afternoon instead: early enough that Tuesday's own close (21:00
+    UTC) has not happened, late enough that Monday's `due_at` already has.
+    """
+    tuesday_afternoon = datetime(2026, 3, 3, 16, 0, tzinfo=UTC)
+
+    assert scan_date_for(tuesday_afternoon) == date(2026, 3, 2)
 
 
 def test_the_due_date_is_todays_session_once_its_offset_has_elapsed():
@@ -106,8 +112,8 @@ def test_a_date_stays_worth_waiting_for_only_inside_the_readiness_window():
     dark while looking busy."""
     close = session_close(TUESDAY)
 
-    assert within_readiness_window(TUESDAY, close + timedelta(hours=6))
-    assert not within_readiness_window(TUESDAY, close + timedelta(hours=13))
+    assert within_readiness_window(TUESDAY, close + timedelta(hours=20))
+    assert not within_readiness_window(TUESDAY, close + timedelta(hours=25))
 
 
 def test_asking_too_early_is_told_to_wait_rather_than_to_retry_immediately():
@@ -120,8 +126,8 @@ def test_asking_too_early_is_told_to_wait_rather_than_to_retry_immediately():
 def test_a_retry_time_is_offered_until_the_window_closes_and_then_is_none():
     close = session_close(TUESDAY)
 
-    assert next_scan_time(TUESDAY, close + timedelta(hours=6)) is not None
-    assert next_scan_time(TUESDAY, close + timedelta(hours=12)) is None
+    assert next_scan_time(TUESDAY, close + timedelta(hours=20)) is not None
+    assert next_scan_time(TUESDAY, close + timedelta(hours=25)) is None
 
 
 def test_pending_days_are_oldest_first_because_lifecycle_is_a_sequence():
