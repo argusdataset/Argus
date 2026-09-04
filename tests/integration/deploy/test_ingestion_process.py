@@ -12,6 +12,11 @@ it refuses, what it resolves, and what it exits with.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from sqlalchemy import Engine, text
 
@@ -20,6 +25,8 @@ from infra.deploy.cli import UnexpectedArguments
 from infra.deploy.migrate import upgrade_to_head
 from infra.deploy.processes import PROCESSES
 from infra.deploy.scanner import UNIVERSE_VERSION_ENV_VAR, ScannerNotReady
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -97,6 +104,57 @@ def _label(engine: Engine, label: str) -> str:
                 {"label": label},
             ).scalar_one()
         )
+
+
+def test_the_cron_starts_in_the_environment_railway_actually_gives_it(migrated: Engine):
+    """G3's acceptance criterion, end to end and out of process.
+
+    Railway injects `DATABASE_URL`, `FMP_API_KEY` and `ARGUS_ENV` and
+    nothing else — no `ARGUS_DATABASE__*` anywhere. Until G3 was fixed
+    (`docs/architecture/KNOWN_ISSUES.md`), `main()` crashed with a
+    pydantic `ValidationError` before it could do anything at all,
+    latently: `resolve_universe_version` raised first, so the crash was
+    invisible right up until the moment the job would otherwise start
+    working.
+
+    So this asserts the whole startup path in a real subprocess with a
+    scrubbed environment: config loads, the engine is built, the profile
+    validates, the database is queried — and the process exits `2` for
+    the *prerequisite* that is genuinely missing, naming it, rather than
+    dying on configuration it was handed correctly.
+
+    Run out of process, from a directory with no `.env`, for the same
+    reason `tests/unit/config/test_database_url.py` does: `env_file` is
+    read from disk rather than through `os.environ`, so an in-process
+    version of this test would give a developer with a local `.env` a
+    different answer from CI (B1).
+    """
+    url = migrated.url.render_as_string(hide_password=False)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from infra.deploy.ingestion import main; raise SystemExit(main([]))",
+        ],
+        cwd=REPO_ROOT.parent,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(REPO_ROOT),
+            "DATABASE_URL": url,
+            "FMP_API_KEY": "test-key-not-used-before-the-refusal",
+            "ARGUS_ENV": "production",
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert "ValidationError" not in result.stderr, result.stderr
+    # 2 is "a prerequisite has not happened", distinct from 1, "ran and
+    # something is wrong" — the distinction the entrypoint exists to draw.
+    assert result.returncode == 2, f"stdout={result.stdout}\nstderr={result.stderr}"
+    assert UNIVERSE_VERSION_ENV_VAR in result.stdout + result.stderr
 
 
 def test_a_named_version_resolves_the_same_way_for_both_processes(migrated: Engine):
