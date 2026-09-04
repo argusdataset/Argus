@@ -675,7 +675,7 @@ as the deep refresh.
 
 ---
 
-### G3. `get_config()` cannot be loaded in the deployed environment — **OPEN, HIGH**
+### G3. `get_config()` cannot be loaded in the deployed environment — **RESOLVED**
 
 Every deployed service runs with `DATABASE_URL` and nothing else — that
 is what `.railway/railway.ts` sets, and it is deliberate: a platform
@@ -710,17 +710,59 @@ latent precisely until the moment the job would otherwise start working.
 `core/ingestion/orchestrator.py`'s `run_daily_ingestion` has the same
 call when `app_config` is not supplied.
 
-**What is fixed.** Module 27 avoids it: `bootstrap_secrets_provider()`
-(`packages/config/secrets.py`) is the extracted, public, documented form
-of what `connection.py` was doing privately, and the telegram service
-uses it. `connection.py` now calls it instead of holding a second copy.
+**The partial fix that came first.** Module 27 avoided it:
+`bootstrap_secrets_provider()` (`packages/config/secrets.py`) is the
+extracted, public, documented form of what `connection.py` was doing
+privately, and the telegram service uses it. `connection.py` calls it
+instead of holding a second copy. But a workaround per call site is not a
+fix — Modules 04 and 26 still called `get_config()` directly, and any
+*new* module calling it would have walked into the same wall.
 
-**What is not.** Modules 04 and 26 still call `get_config()`. The
-narrow fix is for each to take the bootstrap path; the real fix is for
-`AppConfig` to accept `DATABASE_URL` as a source for `database`, which is
-a Module 02 contract change touching every service and was out of scope
-for an alerts bot. Either way this needs doing before the ingestion cron
-is deployed, or it will fail on its first real run.
+**The fix — the root one, not the narrow one.** This entry named two
+options and said the real fix was for `AppConfig` to accept
+`DATABASE_URL` as a source for the `database` group. That is what was
+done, in `packages/config/settings.py`:
+
+- `database_settings_from_url()` derives `host`, `port`, `name` and
+  `user` from a connection string, using `urllib.parse` rather than
+  SQLAlchemy's `make_url` so the project's lowest layer does not gain a
+  dependency on its database toolkit.
+- A `mode="before"` model validator on `AppConfig` merges those fields
+  under any explicit `ARGUS_DATABASE__*` values, **field by field**, so a
+  deployment overriding one setting does not have to restate the other
+  three. `mode="before"` because `database` is required: an "after"
+  validator would run only once validation had already failed with the
+  error this exists to prevent.
+- The password embedded in the connection string is deliberately *not*
+  read. `DatabaseSettings` still has no password field, the credential is
+  still resolved at connection time through `SecretsProvider`, and
+  `AppConfig` remains safe to log — a test asserts the loaded object
+  carries no part of the secret.
+- A URL that is absent, malformed, or not PostgreSQL changes nothing: the
+  original "Field required" error surfaces exactly as before, because a
+  connection string ARGUS cannot use should not be rescued into a
+  half-configured process.
+
+**The regression test.** `tests/unit/config/test_database_url.py` runs
+this entry's own repro in a **subprocess with a scrubbed environment and
+a working directory containing no `.env`** — `env -i`, expressed
+portably. In-process `monkeypatch` could not prove it: `env_file=".env"`
+is read from disk rather than through `os.environ`, which is B1 above and
+is still open, so a developer with a local `.env` would otherwise get a
+different answer from CI on precisely the test that speaks for
+production. Both call sites this entry names are covered — `FmpClient()`
+and `run_daily_ingestion`'s config step — plus the case that must still
+fail: a process with no database configuration at all still raises, and
+still names `database`.
+
+**One test changed rather than being added.**
+`tests/unit/db/test_connection.py::test_no_discrete_setting_is_required_when_a_url_is_supplied`
+asserted that `AppConfig()` *raised* in the platform environment, and
+that `build_database_url` worked anyway. That was the workaround being
+documented as if it were the property. It now asserts the stronger truth:
+the config loads, and both paths agree on the same server.
+
+Fixed in commit `66a343e`.
 
 ---
 
@@ -728,10 +770,10 @@ is deployed, or it will fail on its first real run.
 
 | Severity | Open | Deferred | Closed |
 |---|---|---|---|
-| HIGH | A1, A2 (Module 11 copy), C1, C3, G2, G3 | — | — |
+| HIGH | A1, A2 (Module 11 copy), C1, C3, G2 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G3 |
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were
