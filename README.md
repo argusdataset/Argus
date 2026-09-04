@@ -167,28 +167,42 @@ pytest
 
 All 27 modules are built, with a deployable Docker image and Railway IaC
 covering every one of them (see `infra/deploy/`). Deployed is a narrower
-claim: as of this writing only three of the ten processes actually run on
-Railway — `terminal`, `public_stats` and `identity` — with the rest,
-including the scanner and ingestion, defined but not yet created as
-services (`infra/deploy/README.md`'s "Live state" section has the current
-count). A Phase 1 Integration Audit has run against the deployment
+claim, and the number below is checked directly against Railway
+(`environment-status`, `list-services`) rather than copied from
+`infra/deploy/README.md`'s own "Live state" section — that section is
+prose, goes stale the moment a new service is created, and did: an
+earlier version of this file's Status section repeated a three-of-ten
+count from it that was already out of date by two modules' worth of
+services. As of 2026-09-04, checked directly: nine of the ten processes
+run on Railway and report zero issues — `terminal` (as `Argus`),
+`public_stats`, `identity`, `intelligence`, `health` and `telegram`
+online, `scanner`, `telegram_dispatch` and `retention` ready as cron.
+Only **`ingestion`** (Module 26) has no Railway service yet — see
+`infra/deploy/README.md`'s "Live state" section for detail, but verify
+against Railway directly before repeating a count from it again. A
+Phase 1 Integration Audit has run against the deployment
 (`docs/architecture/KNOWN_ISSUES.md`). What's tracked there as open, as of
 the audit and the fixes since:
 
 - **Corporate actions are never ingested** (splits/dividends) — `docs/architecture/KNOWN_ISSUES.md`
   G2. Until this ships, an unadjusted split or dividend can distort a
   security's price history silently.
-- **`get_config()` cannot be loaded in the deployed environment** — G3.
-  Every deployed service runs on a bare `DATABASE_URL`; one code path
+- **`get_config()` cannot be loaded in the deployed environment** — G3,
+  still open and **not yet exercised in production**. Every deployed
+  service runs on a bare `DATABASE_URL`; one code path
   (`infra/db/connection.py`) already works around it, but any other caller
-  of `get_config()` — including Module 26's ingestion cron — still crashes.
-  This is what currently blocks ingestion from running end-to-end in
-  production.
+  of `get_config()` — including Module 26's ingestion cron — still
+  crashes. Untested against real traffic only because `ingestion` is the
+  one process this would hit and it has not been created on Railway yet;
+  expect it to surface the moment it is.
 - **The scanner cannot see the bars ingestion writes** — G1, **resolved**:
   `scan_offset_hours` and `readiness_window_hours` in
   `core/live_scanner/config.py` were misaligned with the bar-availability
   lag and with each other; both are fixed, which also unblocks the
-  BREAKOUT_READY watchlist and the Module 27 Telegram bot's alerts.
+  BREAKOUT_READY watchlist and the Module 27 Telegram bot's alerts. Not
+  yet meaningful in production, though: `canonical_ohlcv` is still empty
+  with `ingestion` unbuilt, so a passing readiness check has nothing to
+  say yes to.
 - **No universe has been built or set** in production yet
   (`ARGUS_UNIVERSE_VERSION`), and ingestion needs a paid FMP API key — until
   both are in place, there is nothing for the scanner to scan regardless of

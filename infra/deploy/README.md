@@ -583,24 +583,41 @@ Rename in the dashboard first, then update `SERVICE_NAMES` to match.
 Read every destructive line in a plan. An unexpected delete is a bug in the
 generator, not an instruction.
 
-### Live state, 2026-09-02
+### Live state, 2026-09-04
 
-Three of the ten processes are deployed: `terminal` (as `Argus`),
-`public_stats` and `identity`. `intelligence`, `health`, `ingestion`,
-`scanner`, `telegram`, `telegram_dispatch` and `retention` have no
-Railway service at all — so nothing has ever been ingested, no scan has
-ever been scheduled, no alert has ever been sent and no session has ever
-been pruned.
+Nine of the ten processes are deployed and healthy, confirmed directly
+against Railway rather than assumed from this file (`environment-status`,
+`list-services` — see the note below on why that check, not this section,
+is the source of truth going forward): `terminal` (as `Argus`),
+`public_stats`, `identity`, `intelligence`, `health` and `telegram` are
+`online`; `scanner`, `telegram_dispatch` and `retention` are `cronReady`.
+Zero issues, zero recent failures, across all nine.
 
-`ingestion` (Module 26) is new and is the one whose absence matters most.
-The other four missing services degrade what ARGUS can *show*; this one
-is what fills `canonical_ohlcv`, and without it the scanner has nothing
-to scan even once it exists. Create it before `scanner`, not after —
-and note that on the numbers as they stand today the scanner still
-cannot see what it writes, for the reason set out in
-`core/ingestion/README.md`. All three live services now
-build from the Dockerfile, run the production profile, and carry the
-health check, restart policy and — on `identity` — the pre-deploy migration.
-That was applied through the API, not from this file; the first
-`railway config plan` should therefore report little or nothing to change on
-those three, and four services to create.
+`ingestion` (Module 26) is the one process with no Railway service at
+all — so nothing has ever actually been ingested, `canonical_ohlcv` is
+still empty, and the scanner still has nothing to scan even now that its
+readiness check is no longer structurally broken (G1,
+`docs/architecture/KNOWN_ISSUES.md`, fixed): an empty table has zero
+coverage regardless of what cutoff is applied to it. No universe version
+has been built or set either (`ARGUS_UNIVERSE_VERSION`), so both the
+scanner and the not-yet-created `ingestion` process would refuse to run
+at all today. Create `ingestion` next, and expect it to hit G3 on its
+first real run (`get_config()` cannot be loaded in the deployed
+environment) — G3 has not yet been exercised in production, because the
+one process that would trigger it does not exist yet.
+
+The other nine build from the Dockerfile, run the production profile,
+and carry the health check, restart policy and — on `identity` — the
+pre-deploy migration. A `railway config plan` should therefore report
+little or nothing to change on those nine, and one service to create.
+
+**A note on how this section goes stale, since it already has once.**
+This file previously said three of ten were live, written before Module
+27 (the Telegram bot), the two-menu addendum, and the G1 fix landed —
+each of which either creates services this file didn't know about yet or
+changes what "the scanner's readiness check" means. Nothing here
+re-derives from Railway automatically, so treat a date on this heading as
+a claim that ages, not a live value: the tools to check it directly are
+`mcp__Railway__environment-status` and `mcp__Railway__list-services`
+against project `passionate-unity`, and they cost one call each. Prefer
+them over this section whenever the two might disagree.
