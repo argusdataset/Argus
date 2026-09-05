@@ -116,7 +116,9 @@ requests/day  =  6N × ( f_down/30 + f_consol/10 + f_breakout/1 + f_up/1 )
 The shape matters more than any point estimate: the two daily tiers
 dominate completely. At `N = 10,000`, every percentage point of the
 universe sitting in BREAKOUT_READY or UPTREND costs **600 requests a
-day** on its own, while a percentage point in DOWN_TREND costs 2. So the
+day** on its own (100 securities × 6 requests, daily), while a percentage
+point in DOWN_TREND costs 20 (the same 100 securities × 6 requests, once
+every 30 days). So the
 number to watch after the first live run is `f_breakout + f_up`, and the
 cheapest lever if it is too expensive is not the 30-day tier — it is
 trimming `statement_types`, since fundamentals change quarterly and are
@@ -202,22 +204,48 @@ Worth noting alongside it: `scan_offset_hours` is still tagged
 never what it produces". It feeds `as_of`, and `as_of` decides what a
 scan can see. The value moved; the tag did not, and arguably should.
 
-**Corporate actions are never ingested**, and remain unfixed. Scope A is prices, scope B
-is fundamentals and news. Nothing fetches splits or dividends on any
-schedule, and Module 08's `load_panel` builds its adjustment factors
-from `canonical_corporate_actions` at load time — so with that table
-static, a split makes every price series wrong from the split date back,
-silently. Module 15's own README describes the consequence: an
-unadjusted 2-for-1 split is a −50% single-bar excursion, recording a
-successful setup as a catastrophic failure.
+**Corporate actions ride the deep refresh** — the cheap option this
+section used to describe as hypothetical, now built. It was issue G2:
+nothing fetched splits or dividends on any schedule, while Module 08's
+`load_panel` builds its adjustment factors from
+`canonical_corporate_actions` at load time. With that table static, a
+split made every price series wrong from the split date back, silently,
+and Module 15's own README describes the consequence: an unadjusted
+2-for-1 split is a −50% single-bar excursion, recording a successful
+setup as a catastrophic failure.
 
-It was not added because Module 04 exposes splits and dividends only
-per-symbol (there is no calendar endpoint), so a daily full-universe
-sweep would be **two more requests per symbol per day** — tripling the
-OHLCV volume. That is a spending decision, and it is the user's, not
-this module's. The cheap version, if one is wanted, is a third tier:
-corporate actions on the same 30/10/1/1 cadence as the deep refresh,
-which costs `2N × Σ_p (f_p / d_p)` instead.
+A daily full-universe sweep was the expensive option and was not taken.
+Module 04 exposes splits and dividends per-symbol only — there is no
+calendar endpoint — so sweeping everything daily would be **two more
+requests per symbol per day**, roughly tripling the OHLCV volume. Riding
+the existing 30/10/1/1 cadence instead costs
+
+```
+requests/day  =  2N × Σ_p ( f_p / d_p )
+```
+
+which is the deep-refresh formula above with `S + 1 = 2` in place of 6 —
+**a third more deep-refresh requests**, not a tripling of the run. In
+the same terms as that section: at `N = 10,000`, a percentage point of
+the universe in BREAKOUT_READY or UPTREND now costs 800 requests a day
+rather than 600, and a percentage point in DOWN_TREND costs 26.7 rather
+than 20.
+
+It buys the right thing in the right order. A name at the edge of a
+breakout has its splits checked daily; a name in DOWN_TREND monthly. A
+missed split on a security nobody is trading distorts a chart; a missed
+split on a security about to produce a setup distorts the outcome record
+Module 15 learns from.
+
+**What it still costs.** A DOWN_TREND security can carry a stale
+adjustment for up to 30 days. Only the *adjusted* series is affected —
+the raw series is what a trader saw and is never wrong — and a stale
+adjustment that far from a setup is a chart artefact rather than a
+corrupted outcome. Closing that window would mean paying daily for every
+name in the universe to fix a handful of them.
+
+Module 06's historical backfill remains unwired for corporate actions;
+that is a separate gap and is noted as one.
 
 ## What is tested
 
@@ -232,6 +260,11 @@ which costs `2N × Σ_p (f_p / d_p)` instead.
   free re-run (with the checkpoint deleted between them), a checkpoint
   resume isolated from the database skip, and the `acceptedDate` PIT
   rule surviving this path.
+- `tests/integration/ingestion/test_corporate_actions.py` — the G2 fix
+  from both ends: that splits and dividends are now requested and stored,
+  and that a 2-for-1 split read back through `load_panel` halves the
+  pre-split prices. It also reproduces the bug with the actions withheld,
+  so the passing case is known to be load-bearing.
 - `tests/integration/ingestion/test_tiered_refresh.py` — all seven
   listed states mapping to the right tier, both internal states getting
   none, and the phase-transition reset.

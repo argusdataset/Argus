@@ -1,4 +1,4 @@
-"""The tiered per-security deep refresh: fundamentals and news.
+"""The tiered per-security deep refresh: fundamentals, news, corporate actions.
 
 Frequency is set by the security's *current* watchlist phase — 30 days in
 DOWN_TREND, 10 in CONSOLIDATION, daily in BREAKOUT_READY and UPTREND. The
@@ -30,6 +30,34 @@ a log row committed without its data would make the next run skip a
 security that has none. If the transaction fails, nothing is logged and
 the security is due again tomorrow, which is the right way round.
 
+## Corporate actions ride this cadence, and that is a cost decision
+
+Splits and dividends are not extra colour like news — they are what makes
+the *price series itself* correct. Module 08's `load_panel` builds its
+adjustment factors from `canonical_corporate_actions` at load time rather
+than storing an adjusted series, so an empty table makes an unadjusted
+2-for-1 split look like a −50% single-bar collapse, and Module 15 records
+a successful setup as a catastrophic failure. That was issue G2.
+
+They are here rather than in `prices.py` because FMP exposes splits and
+dividends **per symbol only** — there is no calendar or bulk endpoint. A
+daily full-universe sweep would be two extra requests per symbol per day
+and would roughly triple the price path's volume. Riding this file's
+existing 30/10/1/1 cadence instead spends the requests where they matter:
+a name in BREAKOUT_READY is checked daily, a name in DOWN_TREND monthly.
+
+That ordering is the right one for ARGUS specifically. A missed split on
+a security nobody is trading distorts a chart; a missed split on a
+security at the edge of a breakout distorts the outcome record that
+Module 15 learns from.
+
+**What it costs.** A security in DOWN_TREND can carry a stale adjustment
+for up to 30 days. The raw series is never wrong — only the adjusted one
+— and a stale adjustment on a name that far from a setup is a chart
+artefact rather than a corrupted outcome. The alternative was paying
+daily for every name in the universe to close a window that only matters
+for a handful of them.
+
 ## Articles are filtered to the symbol they were requested for
 
 FMP's news endpoint takes a symbol list and its rows carry their own
@@ -58,7 +86,7 @@ from data.normalization.persistence import CanonicalWriter
 from data.normalization.pipeline import normalize_security, persist
 from data.normalization.translate import TranslationError, translate_news
 from data.provider_adapters.fmp.errors import FmpError
-from data.provider_adapters.fmp.models import FinancialStatement, NewsArticle
+from data.provider_adapters.fmp.models import CorporateAction, FinancialStatement, NewsArticle
 from infra.db.enums import MarketState
 from infra.observability.logging import get_logger
 
@@ -81,6 +109,10 @@ class DeepRefreshSource(Protocol):
 
     async def fetch_news(self, symbols: Any, *, page: int = ..., limit: int = ...) -> Any: ...
 
+    async def fetch_splits(self, symbol: str) -> Any: ...
+
+    async def fetch_dividends(self, symbol: str) -> Any: ...
+
 
 @dataclass(slots=True)
 class DeepRefreshReport:
@@ -93,6 +125,7 @@ class DeepRefreshReport:
     triggers: dict[str, int] = field(default_factory=dict)
     fundamentals_inserted: int = 0
     news_inserted: int = 0
+    corporate_actions_inserted: int = 0
     requests: int = 0
     failed: dict[str, str] = field(default_factory=dict)
 
@@ -108,9 +141,24 @@ class DeepRefreshReport:
             "triggers": dict(self.triggers),
             "fundamentals_inserted": self.fundamentals_inserted,
             "news_inserted": self.news_inserted,
+            "corporate_actions_inserted": self.corporate_actions_inserted,
             "requests": self.requests,
             "failed": len(self.failed),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _Fetched:
+    """One security's payload for this refresh.
+
+    A record rather than a growing tuple: three parallel lists unpacked
+    positionally is where the wrong one gets passed to the wrong
+    parameter, and `normalize_security` takes all three by keyword.
+    """
+
+    statements: list[FinancialStatement]
+    articles: list[NewsArticle]
+    actions: list[CorporateAction]
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,12 +227,12 @@ async def refresh_due_securities(
     async def refresh_one(due: _DueSecurity) -> None:
         async with semaphore:
             try:
-                statements, articles = await _fetch(source, due.member.ticker, resolved, report)
+                fetched = await _fetch(source, due.member.ticker, resolved, report)
             except FmpError as error:
                 report.failed[due.member.ticker] = f"{type(error).__name__}: {error}"
                 return
         try:
-            _write(engine, due, statements, articles, resolved, report, moment=moment)
+            _write(engine, due, fetched, resolved, report, moment=moment)
         except Exception as error:  # noqa: BLE001 - one security must not stop the run
             report.failed[due.member.ticker] = f"{type(error).__name__}: {error}"
             _log.warning(
@@ -210,13 +258,22 @@ async def _fetch(
     ticker: str,
     config: IngestionConfig,
     report: DeepRefreshReport,
-) -> tuple[list[FinancialStatement], list[NewsArticle]]:
-    """Every configured statement type, then news, for one symbol.
+) -> _Fetched:
+    """Every configured statement type, then news, then splits and dividends.
 
     Sequential rather than gathered: the concurrency ceiling belongs to
     the run as a whole (`max_concurrency` securities at once), and
     fanning out inside one security as well would make the real ceiling
     the product of the two and quietly exceed the rate limiter's budget.
+
+    An `FmpError` on any of these — corporate actions included —
+    propagates and costs the security its whole refresh. That is
+    deliberate rather than an oversight of the alternative: swallowing a
+    splits failure would still write the log row, and the log row is what
+    says "this security has been refreshed". A security in DOWN_TREND
+    would then wait 30 days to retry a split it never fetched, which is
+    exactly the silence G2 was about. Failing the whole refresh makes it
+    due again tomorrow.
     """
     statements: list[FinancialStatement] = []
     for statement_type in config.statement_types:
@@ -238,7 +295,17 @@ async def _fetch(
     # would crowd out every quiet one it travelled with. The cost of
     # asking separately is in the volume formula in the README.
     articles = [article for article in news.records if _matches(article, ticker)]
-    return statements, articles
+
+    # Splits and dividends: two requests, both per-symbol because FMP
+    # offers no calendar endpoint for either. See the module docstring on
+    # why they ride this cadence rather than the daily price path.
+    actions: list[CorporateAction] = []
+    for fetch_actions in (source.fetch_splits, source.fetch_dividends):
+        result = await fetch_actions(ticker)
+        report.requests += 1
+        actions.extend(result.records)
+
+    return _Fetched(statements=statements, articles=articles, actions=actions)
 
 
 def _matches(article: NewsArticle, ticker: str) -> bool:
@@ -251,23 +318,32 @@ def _matches(article: NewsArticle, ticker: str) -> bool:
 def _write(
     engine: Engine,
     due: _DueSecurity,
-    statements: list[FinancialStatement],
-    articles: list[NewsArticle],
+    fetched: _Fetched,
     config: IngestionConfig,
     report: DeepRefreshReport,
     *,
     moment: datetime,
 ) -> None:
-    """Fundamentals, news and the log row, in one transaction."""
+    """Fundamentals, corporate actions, news and the log row, in one transaction."""
     security_id = due.member.security_id
 
     with engine.begin() as connection:
-        outcome = normalize_security(security_id=security_id, statements=statements)
+        # `actions=` is what closes G2. No bars are passed, so nothing is
+        # adjusted here — `persist` writes the actions to
+        # `canonical_corporate_actions` and Module 08's `load_panel`
+        # builds its factors from them at read time, which is where the
+        # adjustment belongs.
+        outcome = normalize_security(
+            security_id=security_id,
+            statements=fetched.statements,
+            actions=fetched.actions,
+        )
         persist(outcome, CanonicalWriter(connection))
         fundamentals = outcome.writes["fundamentals"]
+        corporate_actions = outcome.writes["corporate_actions"]
 
         canonical_articles = []
-        for article in articles:
+        for article in fetched.articles:
             try:
                 canonical_articles.append(translate_news(article, security_id))
             except TranslationError as error:
@@ -294,6 +370,14 @@ def _write(
                     "statement_types": list(config.statement_types),
                     "statements_offered": fundamentals.offered,
                     "news_offered": written_news.offered,
+                    # Not a column on `deep_refresh_log`: the table's
+                    # written-counts are fundamentals and news, and
+                    # adding a third would be a migration for a number
+                    # the run report already carries. Recorded in the
+                    # detail payload so a past refresh can still be
+                    # asked what it saw.
+                    "corporate_actions_offered": corporate_actions.offered,
+                    "corporate_actions_written": corporate_actions.inserted,
                     "completed_at": moment.isoformat(),
                     "translation_rejected": len(outcome.translation.rejected),
                 },
@@ -302,5 +386,6 @@ def _write(
 
     report.fundamentals_inserted += fundamentals.inserted
     report.news_inserted += written_news.inserted
+    report.corporate_actions_inserted += corporate_actions.inserted
     if logged:
         report.refreshed += 1

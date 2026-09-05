@@ -38,6 +38,8 @@ from data.normalization.identity import SecurityIdentityResolver
 from data.provider_adapters.fmp.checkpoint import JobCheckpoint
 from data.provider_adapters.fmp.fetchers import BackfillReport, FetchResult
 from data.provider_adapters.fmp.models import (
+    CorporateAction,
+    CorporateActionKind,
     DailyBar,
     FetchProvenance,
     FinancialStatement,
@@ -214,6 +216,7 @@ class FakeFetcher:
         bars_for: Callable[[str], list[DailyBar]] | None = None,
         statements_for: Callable[[str, str], list[FinancialStatement]] | None = None,
         news_for: Callable[[str], list[NewsArticle]] | None = None,
+        actions_for: Callable[[str, CorporateActionKind], list[CorporateAction]] | None = None,
         checkpoint_dir: Any = None,
         fail_after: int | None = None,
         bulk_symbols: tuple[str, ...] = (),
@@ -221,12 +224,18 @@ class FakeFetcher:
         self._bars_for = bars_for or (lambda symbol: [])
         self._statements_for = statements_for or (lambda symbol, kind: [])
         self._news_for = news_for or (lambda symbol: [])
+        self._actions_for = actions_for or (lambda symbol, kind: [])
         self._checkpoint_dir = checkpoint_dir
         self._fail_after = fail_after
         self._bulk_symbols = bulk_symbols
         self.price_requests: list[str] = []
         self.statement_requests: list[tuple[str, str]] = []
         self.news_requests: list[str] = []
+        #: (symbol, kind) per split/dividend request. Separate from the
+        #: statement list because the volume question G2 turned on is
+        #: "how many extra requests do corporate actions cost", and a
+        #: shared counter could not answer it.
+        self.action_requests: list[tuple[str, CorporateActionKind]] = []
         self.bulk_requests: list[date] = []
 
     # -- prices -------------------------------------------------------------
@@ -286,12 +295,21 @@ class FakeFetcher:
             articles.extend(self._news_for(symbol))
         return _result(articles)
 
+    async def fetch_splits(self, symbol: str):
+        self.action_requests.append((symbol, CorporateActionKind.SPLIT))
+        return _result(self._actions_for(symbol, CorporateActionKind.SPLIT))
+
+    async def fetch_dividends(self, symbol: str):
+        self.action_requests.append((symbol, CorporateActionKind.DIVIDEND))
+        return _result(self._actions_for(symbol, CorporateActionKind.DIVIDEND))
+
     @property
     def total_requests(self) -> int:
         return (
             len(self.price_requests)
             + len(self.statement_requests)
             + len(self.news_requests)
+            + len(self.action_requests)
             + len(self.bulk_requests)
         )
 
@@ -378,3 +396,46 @@ def close_of(day: date) -> datetime:
 
 def days_before(day: date, count: int) -> date:
     return day - timedelta(days=count)
+
+
+def split(
+    symbol: str,
+    *,
+    event_date: date,
+    numerator: int = 2,
+    denominator: int = 1,
+) -> CorporateAction:
+    """One split, as FMP reports them.
+
+    FMP supplies no announcement date for a split, so none is set here
+    either — `translate_corporate_action` then treats it as knowable only
+    on the effective date, and a fixture that invented one would be
+    testing a payload the provider does not send.
+    """
+    return CorporateAction(
+        provenance=provenance("splits"),
+        symbol=symbol,
+        kind=CorporateActionKind.SPLIT,
+        event_date=event_date,
+        details={"numerator": numerator, "denominator": denominator},
+    )
+
+
+def dividend(
+    symbol: str,
+    *,
+    event_date: date,
+    amount: str = "0.25",
+    declared_on: date | None = None,
+) -> CorporateAction:
+    """One cash dividend, with the declaration date FMP does supply."""
+    details: dict[str, Any] = {"dividend": amount, "adjDividend": amount}
+    if declared_on is not None:
+        details["declarationDate"] = declared_on.isoformat()
+    return CorporateAction(
+        provenance=provenance("dividends"),
+        symbol=symbol,
+        kind=CorporateActionKind.DIVIDEND,
+        event_date=event_date,
+        details=details,
+    )

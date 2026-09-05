@@ -652,26 +652,81 @@ correcting once.
 
 ---
 
-### G2. Corporate actions are never ingested on any schedule — **OPEN, HIGH**
+### G2. Corporate actions are never ingested on any schedule — **RESOLVED**
 
-Module 26 ingests prices daily and fundamentals/news on a tiered cadence.
-Nothing ingests splits or dividends, ever, and Module 06's universe
-builder is likewise unwired — a separate gap, already noted.
+Module 26 ingested prices daily and fundamentals/news on a tiered
+cadence. Nothing ingested splits or dividends, ever.
 
 Module 08's `load_panel` builds its adjustment factors from
 `canonical_corporate_actions` at load time rather than reading a stored
-adjusted series. With that table static, a split makes every price series
+adjusted series. With that table static, a split made every price series
 wrong from the split date backwards, silently, and Module 15's README
 already describes the consequence: an unadjusted 2-for-1 split is a −50%
 single-bar excursion that records a successful setup as a catastrophic
 failure.
 
-It was flagged rather than fixed because it is a spending decision, not a
-technical one. Module 04 exposes splits and dividends only per-symbol —
-there is no calendar endpoint — so a daily full-universe sweep is two
-extra requests per symbol per day, roughly tripling Module 26's OHLCV
-volume. The cheaper option is a third tier on the same 30/10/1/1 cadence
-as the deep refresh.
+**What was actually missing.** Nothing in the pipeline was broken. FMP's
+`fetch_splits` and `fetch_dividends`, `translate_corporate_action`,
+`persist`'s `write_corporate_actions` — all present and all correct, and
+`persist` even writes actions *before* bars because the adjusted series
+is derived from them. The two fetchers were simply called from nowhere
+outside their own unit tests. The pipe was laid; no water went in.
+
+**The fix: a third kind on the existing tiered cadence.** It was a
+spending decision rather than a technical one, and the cheaper of the two
+options was taken. Module 04 exposes splits and dividends per-symbol only
+— there is no calendar endpoint — so a daily full-universe sweep would be
+two extra requests per symbol per day, roughly tripling Module 26's OHLCV
+volume. Instead `core/ingestion/deep_refresh.py` now fetches both
+alongside fundamentals and news, on the same 30/10/1/1 cadence:
+
+- `DeepRefreshSource` gained `fetch_splits` and `fetch_dividends`.
+  `FmpFetcher` already satisfied both; nothing in Module 04 changed.
+- `_fetch` makes the two extra requests per due security and counts them.
+- `_write` passes `actions=` to `normalize_security`, which is the whole
+  of the write side — `persist` already handled the rest.
+- `DeepRefreshReport` gained `corporate_actions_inserted`; the log row
+  records offered/written counts in `detail` rather than in a new column,
+  since the run report already carries the number.
+
+**Cost, in the README's own terms.** Six requests per due security became
+eight — a third more deep-refresh volume, not a tripled run. At
+`N = 10,000`, a percentage point of the universe in BREAKOUT_READY or
+UPTREND costs 800 requests a day rather than 600. (Correcting a figure
+that section had wrong: a percentage point in DOWN_TREND costs 20 a day,
+not 2 — now 26.7.)
+
+**A failure is not swallowed.** An `FmpError` on the splits or dividends
+request fails the security's whole refresh, exactly as one on
+fundamentals does. Catching it locally would still write the log row, and
+the log row is what says "this security has been refreshed" — so a
+DOWN_TREND security would wait 30 days before retrying a split it never
+fetched, which is the same silence this entry is about. Failing makes it
+due again tomorrow.
+
+**What this deliberately does not do.** Every other recent data addition
+— news volume, insider, 13F, the Terminal's analyst data — is fenced off
+from `core/scoring` and `core/market_state` by structural tests.
+Corporate actions are the opposite case: they *must* reach the core price
+path, because that is the only way the adjusted series is right.
+
+**The tests.** `tests/integration/ingestion/test_corporate_actions.py`
+proves it from both ends. That the fetchers are now called and their
+records stored — and, the assertion that would have caught this,
+that a security trading at 100 before a 2-for-1 split and 50 after comes
+back from `load_panel` as a flat line at 50, with no −50% bar anywhere.
+The same file reproduces the bug with the actions withheld, so the
+passing case is known to be load-bearing rather than passing for some
+other reason, and asserts that a replay of a date before the split still
+sees the unadjusted series — closing G2 must not turn the adjusted series
+into a source of foreknowledge.
+
+**Still open, and separate.** Module 06's universe builder / historical
+backfill remains unwired for corporate actions. A backfill spanning a
+split still produces an unadjusted history; that is its own gap and is
+not covered here.
+
+Fixed in commit `{SHA}`.
 
 ---
 
@@ -770,10 +825,10 @@ Fixed in commit `66a343e`.
 
 | Severity | Open | Deferred | Closed |
 |---|---|---|---|
-| HIGH | A1, A2 (Module 11 copy), C1, C3, G2 | — | — |
+| HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G3 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3 |
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were
