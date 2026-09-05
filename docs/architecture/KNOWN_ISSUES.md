@@ -726,7 +726,7 @@ backfill remains unwired for corporate actions. A backfill spanning a
 split still produces an unadjusted history; that is its own gap and is
 not covered here.
 
-Fixed in commit `{SHA}`.
+Fixed in commit `ca48d56`.
 
 ---
 
