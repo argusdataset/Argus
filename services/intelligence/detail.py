@@ -11,6 +11,9 @@ comes from a row an earlier module wrote:
 | `risk` | signal's stored risk flags + `pending_material_events` | 12 |
 | `explanation` | `explain_signal` over the above | 16 |
 | `news_signal` | `news_volume_signals`, read directly, never joined into the above | 28 |
+| `sec_filing_signal` | `sec_filing_signals` | 28 |
+| `insider_cluster` | `insider_cluster_signals` | 29 |
+| `institutional_ownership` | `institutional_ownership_signals` | 29 |
 
 The explanation is the one place something is *produced* rather than
 read, and it is produced by Module 16's own narrator from the blocks
@@ -41,14 +44,20 @@ from infra.db.schema.identity import security_identity, security_ticker_history
 from services.intelligence.blocks import (
     build_explanation,
     build_freshness,
+    build_insider_cluster,
+    build_institutional_ownership,
     build_news_signal,
     build_risk,
     build_score,
+    build_sec_filing_signal,
     build_similarity,
     build_state,
 )
 from services.intelligence.reads import (
+    latest_insider_signal,
+    latest_institutional_signal,
     latest_news_signal,
+    latest_sec_filing_signal,
     latest_signal,
     latest_similarity,
     pending_events,
@@ -80,6 +89,9 @@ def read_detail(
     state = state_row(connection, security_id)
     events = pending_events(connection, security_id, as_of=as_of)
     news_signal = latest_news_signal(connection, security_id)
+    filing_signal = latest_sec_filing_signal(connection, security_id)
+    insider_signal = latest_insider_signal(connection, security_id)
+    institutional_signal = latest_institutional_signal(connection, security_id)
 
     risk_flags = _risk_flags(signal)
     explanation = _narrate(signal, scoped=scoped, risk=risk_flags, state=state)
@@ -94,6 +106,9 @@ def read_detail(
         risk=build_risk(flags=risk_flags, pending=events),
         explanation=build_explanation(explanation),
         news_signal=build_news_signal(news_signal),
+        sec_filing_signal=build_sec_filing_signal(filing_signal),
+        insider_cluster=build_insider_cluster(insider_signal),
+        institutional_ownership=build_institutional_ownership(institutional_signal),
         freshness=build_freshness(
             computed_at=signal.get("event_time") if signal else None,
             as_of=as_of,

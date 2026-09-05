@@ -42,8 +42,10 @@ purchase that was still undisclosed then.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -57,17 +59,72 @@ from core.ownership_signals.config import (
     OwnershipSignalConfig,
     OwnershipThresholds,
 )
-from data.normalization.persistence import DEFAULT_BATCH_SIZE
-from infra.db.schema.ownership_signals import insider_cluster_signals
+from data.canonical_model.pit import PitTimestamps
+from data.normalization.persistence import DEFAULT_BATCH_SIZE, WriteResult
+from data.provider_adapters.fmp.models import InsiderTransaction
+from infra.db.schema.ownership_signals import insider_cluster_signals, insider_trades
 
 __all__ = [
+    "FIELD_ALIASES",
     "InsiderCluster",
     "InsiderClusterSignal",
+    "StoredInsiderTrade",
     "assess_insider_batch",
     "evaluate_insider_cluster",
     "insider_purchase_counts",
+    "normalize_transaction_code",
     "store_insider_signals",
+    "translate_insider_transaction",
+    "write_insider_trades",
 ]
+
+#: Accepted spellings per concept, tried in order. Unconfirmed — FMP's
+#: Ultimate plan was not purchased when this was written, so this follows
+#: `core/candidate_detection/eligibility/bankruptcy.py`'s pattern and the
+#: stored row records which spelling actually resolved.
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "transaction_date": ("transactionDate", "filingDate", "date"),
+    "transaction_code": (
+        "transactionType",
+        "transactionCode",
+        "acquisitionOrDisposition",
+        "type",
+    ),
+    "reporting_person": (
+        "reportingName",
+        "reportingPerson",
+        "insiderName",
+        "owner",
+        "name",
+    ),
+    "reporting_position": ("typeOfOwner", "officerTitle", "relationship", "position"),
+    "quantity": ("securitiesTransacted", "transactionShares", "shares", "quantity"),
+    "price": ("price", "transactionPrice", "pricePerShare"),
+}
+
+#: Word forms mapped onto their SEC transaction code. FMP is documented as
+#: reporting this field as `"P-Purchase"`, `"S-Sale"` and so on, but a
+#: bare code and a bare word are both plausible shapes for the same
+#: value, and the entire signal turns on telling a purchase from a grant —
+#: so all three are read rather than one being assumed.
+_CODE_WORDS: dict[str, str] = {
+    "PURCHASE": "P",
+    "BUY": "P",
+    "BOUGHT": "P",
+    "SALE": "S",
+    "SELL": "S",
+    "SOLD": "S",
+    "AWARD": "A",
+    "GRANT": "A",
+    "EXEMPT": "M",
+    "EXERCISE": "M",
+    "GIFT": "G",
+}
+
+#: A bare `YYYY-MM-DD`. Recognised before ISO parsing rather than after,
+#: because `fromisoformat` succeeds on it and returns midnight — see
+#: `_as_datetime`.
+_DATE_ONLY_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +176,223 @@ class InsiderClusterSignal:
             "unavailable": self.unavailable.value if self.unavailable else None,
             "detail": dict(self.detail),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class StoredInsiderTrade:
+    """One insider transaction, ready for `insider_trades`."""
+
+    security_id: UUID
+    pit: PitTimestamps
+    reporting_person: str | None
+    reporting_position: str | None
+    transaction_code: str | None
+    quantity: Decimal | None
+    price: Decimal | None
+    lineage: dict[str, Any]
+    data: dict[str, Any]
+
+
+class InsiderTranslationError(ValueError):
+    """A transaction cannot be stored without inventing when it happened.
+
+    Raised rather than defaulted, the same rule
+    `data/normalization/translate.py` applies: a purchase dated by guess
+    would land in or out of a thirty-day window arbitrarily, which is
+    precisely the comparison this module exists to make.
+    """
+
+
+def resolve_field(payload: dict[str, Any], concept: str) -> tuple[Any, str | None]:
+    """First resolvable alias for `concept`, with the key that worked."""
+    for alias in FIELD_ALIASES[concept]:
+        value = payload.get(alias)
+        if value is None or value == "":
+            continue
+        return value, alias
+    return None, None
+
+
+def normalize_transaction_code(value: Any) -> str | None:
+    """The SEC transaction code, from whichever shape the provider used.
+
+    `"P"`, `"P-Purchase"` and `"Purchase"` all mean the same transaction
+    and all three are plausible — see `_CODE_WORDS`. Returning `None` for
+    anything unrecognised is deliberate: an unknown code must not be
+    counted as a purchase, because over-counting here manufactures the
+    exact signal a reader would act on.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip().upper()
+    if not raw:
+        return None
+
+    # "P-Purchase" -> "P". Checked before the bare-letter case so the
+    # letter is read from the code half rather than from a word.
+    head, _, tail = raw.partition("-")
+    if len(head) == 1 and head.isalpha():
+        return head
+    if tail and len(tail) == 1 and tail.isalpha():
+        return tail
+
+    if len(raw) == 1 and raw.isalpha():
+        return raw
+    return _CODE_WORDS.get(raw)
+
+
+def translate_insider_transaction(
+    transaction: InsiderTransaction,
+    security_id: UUID,
+    *,
+    thresholds: OwnershipThresholds | None = None,
+) -> StoredInsiderTrade:
+    """One provider transaction, ready to store.
+
+    `event_time` is the transaction date — when the insider actually
+    traded. `observation_time` is that plus the Form 4 filing deadline,
+    because the trade is not public until it is filed, and
+    `availability_time` follows from it. Anchoring availability to the
+    transaction date instead would let a replay read a purchase up to two
+    days before anyone could have known about it.
+    """
+    resolved = thresholds or OwnershipThresholds()
+    payload = dict(transaction.raw)
+
+    raw_date, date_key = resolve_field(payload, "transaction_date")
+    traded_at = _as_datetime(raw_date)
+    if traded_at is None:
+        raise InsiderTranslationError(
+            f"Insider transaction for {transaction.symbol!r} has no resolvable date. "
+            f"Tried {FIELD_ALIASES['transaction_date']}; refusing to invent one."
+        )
+
+    raw_code, code_key = resolve_field(payload, "transaction_code")
+    person, person_key = resolve_field(payload, "reporting_person")
+    position, position_key = resolve_field(payload, "reporting_position")
+    quantity, quantity_key = resolve_field(payload, "quantity")
+    price, price_key = resolve_field(payload, "price")
+
+    knowable = traded_at + resolved.insider_availability_lag
+    return StoredInsiderTrade(
+        security_id=security_id,
+        pit=PitTimestamps.derive(
+            event_time=traded_at,
+            observation_time=knowable,
+            ingestion_time=transaction.provenance.fetched_at,
+            lag=timedelta(0),
+        ),
+        reporting_person=str(person) if person else None,
+        reporting_position=str(position) if position else None,
+        transaction_code=normalize_transaction_code(raw_code),
+        quantity=_decimal(quantity),
+        price=_decimal(price),
+        lineage={
+            "provider": transaction.provenance.provider,
+            "endpoint": transaction.provenance.endpoint,
+            "from_cache": transaction.provenance.from_cache,
+            "resolved_fields": {
+                "transaction_date": date_key,
+                "transaction_code": code_key,
+                "reporting_person": person_key,
+                "reporting_position": position_key,
+                "quantity": quantity_key,
+                "price": price_key,
+            },
+            # The provider's own wording, kept beside the normalized code:
+            # if the normalization ever mis-reads a shape nobody
+            # anticipated, the evidence is in the row rather than lost.
+            "transaction_code_raw": str(raw_code) if raw_code is not None else None,
+        },
+        data=payload,
+    )
+
+
+def write_insider_trades(
+    connection: Connection,
+    trades: list[StoredInsiderTrade],
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> WriteResult:
+    """Insert-only, idempotent on the best-effort natural key.
+
+    `(security_id, reporting_person, event_time, transaction_code,
+    quantity)` — no confirmed provider id exists to key on, so this is
+    the closest thing to one. Its known limit, stated rather than hidden:
+    an insider who made two identical-size purchases on one day at
+    different prices collapses to a single stored row. That under-counts
+    `purchase_count` and never the distinct-buyer count the signal
+    actually thresholds on, so the failure mode is conservative.
+    """
+    result = WriteResult(offered=len(trades))
+    if not trades:
+        return result
+
+    values = [
+        {
+            "security_id": trade.security_id,
+            **trade.pit.as_columns(),
+            "reporting_person": trade.reporting_person,
+            "reporting_position": trade.reporting_position,
+            "transaction_code": trade.transaction_code,
+            "quantity": trade.quantity,
+            "price": trade.price,
+            "lineage": trade.lineage,
+            "data": trade.data,
+        }
+        for trade in trades
+    ]
+
+    for start in range(0, len(values), batch_size):
+        batch = values[start : start + batch_size]
+        if not batch:
+            continue
+        statement = (
+            insert(insider_trades)
+            .values(batch)
+            .on_conflict_do_nothing(constraint="uq_insider_trade_natural_key")
+            .returning(insider_trades.c.id)
+        )
+        result.inserted += len(connection.execute(statement).fetchall())
+    return result
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    """A provider timestamp, tolerant of the shapes FMP uses.
+
+    A date with no time anchors to end of day rather than midnight, the
+    same choice `core/news_signals/filings.py` makes and for the same
+    reason: midnight would make the trade knowable a day early.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime.combine(value, time.max, tzinfo=UTC)
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if _DATE_ONLY_PATTERN.fullmatch(raw):
+        return datetime.combine(date.fromisoformat(raw), time.max, tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.combine(date.fromisoformat(raw[:10]), time.max, tzinfo=UTC)
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 _PURCHASE_QUERY = """

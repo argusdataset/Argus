@@ -86,7 +86,9 @@ from infra.db.schema.setups import setup_outcomes, setups
 from services.intelligence.blocks import build_freshness, build_score
 from services.intelligence.errors import UNKNOWN_WATCHLIST, IntelligenceError
 from services.intelligence.reads import (
+    latest_insider_signals,
     latest_news_signals,
+    latest_sec_filing_signals,
     latest_signal,
     state_row,
     transitions_for,
@@ -136,6 +138,8 @@ def read_watchlist(
     # `news_signal_raised=None`, and nothing about membership or score
     # above depends on this lookup at all.
     news_signals = latest_news_signals(connection, shown)
+    filing_signals = latest_sec_filing_signals(connection, shown)
+    insider_signals = latest_insider_signals(connection, shown)
     entries: list[IntelligenceEntry] = []
     for security_id in shown:
         state = state_row(connection, security_id)
@@ -159,6 +163,12 @@ def read_watchlist(
                 mfe=_current_mfe(connection, security_id) if include_lineage else None,
                 news_signal_raised=(
                     news_signals[security_id].raised if security_id in news_signals else None
+                ),
+                sec_filing_raised=(
+                    filing_signals[security_id].raised if security_id in filing_signals else None
+                ),
+                insider_cluster_raised=(
+                    insider_signals[security_id].raised if security_id in insider_signals else None
                 ),
             )
         )

@@ -219,6 +219,22 @@ PROCESSES: dict[str, ProcessDefinition] = {
         schedule="0 3 * * *",
         description="Module 25. Prunes expired sessions; measures append-only growth.",
     ),
+    "ownership_signals": ProcessDefinition(
+        name="ownership_signals",
+        kind="cron",
+        module="infra.deploy.ownership_signals",
+        # 23:45 UTC on weekdays, fifteen minutes after news_signals. Last
+        # in the evening chain and deliberately after it: both read tables
+        # ingestion filled hours earlier, so the order between them is
+        # arbitrary, but staggering keeps two cron containers off the same
+        # database at the same instant for no benefit.
+        schedule="45 23 * * 1-5",
+        description=(
+            "Module 29. Insider-buy clusters and 13F institutional-ownership trend. "
+            "Display-only annotations in services/intelligence; never read by scoring "
+            "or market_state."
+        ),
+    ),
     "news_signals": ProcessDefinition(
         name="news_signals",
         kind="cron",

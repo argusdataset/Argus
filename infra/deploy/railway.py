@@ -136,6 +136,7 @@ SERVICE_NAMES: dict[str, str] = {
     "telegram_dispatch": "telegram_dispatch",
     "retention": "retention",
     "news_signals": "news_signals",
+    "ownership_signals": "ownership_signals",
 }
 
 #: Variables each process needs that are secret. Named here, never valued:
@@ -158,6 +159,9 @@ SECRET_VARIABLES: dict[str, tuple[str, ...]] = {
     # core/news_signals/orchestrator.py on why this carries no G3 exposure
     # and infra/deploy/news_signals.py on why it needs no secret at all.
     "news_signals": (),
+    # Same as news_signals: reads tables ingestion already filled, so no
+    # provider credential is needed.
+    "ownership_signals": (),
 }
 
 #: The four settings the IaC DSL has no field for, as data. Each entry is
@@ -232,7 +236,7 @@ def _env_lines(name: str, indent: str) -> list[str]:
         # N workers is N independent ceilings. config.py refuses to start a
         # production process with more than one and no shared store.
         lines.append(f'{indent}WEB_CONCURRENCY: "1",')
-    if name in {"ingestion", "scanner", "news_signals"}:
+    if name in {"ingestion", "scanner", "news_signals", "ownership_signals"}:
         # All three raise ScannerNotReady rather than guessing a universe,
         # and all three read the same variable through the same function —
         # bars ingested, states classified and signals computed for one

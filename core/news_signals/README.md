@@ -1,9 +1,42 @@
-# Module 28 — Reactive News-Volume Signal
+# Module 28 — Reactive News Signals
 
-Answers one narrow question, per security, per day: did unusually many
-`canonical_news` articles show up today, relative to this security's own
-trailing average? **A reactive, already-occurred anomaly detector — not a
-prediction, and not a read of *what* the news is about.** Volume only.
+Two reactive, per-security, per-day signals about *something having
+happened*, neither of which predicts anything:
+
+1. **News-volume anomaly** (`signal.py`) — did unusually many
+   `canonical_news` articles show up today, relative to this security's
+   own trailing average? Volume only; not a read of what the news says.
+2. **SEC 8-K filing** (`filings.py`) — did the company file a
+   material-event form today, and which Items did it disclose?
+
+The second is the more precise of the two and deliberately lives here
+rather than in a module of its own: an 8-K is a form the SEC *requires*
+when something material happens, where a headline count is a proxy for
+attention that may or may not have a cause behind it. They answer the
+same kind of question at different resolutions.
+
+## Why one is tri-state and the other is not
+
+`NewsVolumeSignal.raised` is `bool | None` because "unusually many" is a
+comparison against a baseline, and a security without enough history has
+no baseline — reporting `False` would claim a measurement nobody made.
+
+`SecFilingSignal.raised` is a plain `bool`. A filing either happened on a
+date or it did not: there is no baseline to be short of, so there is no
+undetermined state, and `sec_filing_signals.raised` is `NOT NULL`.
+
+That difference is the clearest example of a rule this project applies
+everywhere — the shape of a verdict follows from what the question can
+honestly answer, not from a house style.
+
+## Item numbers are colour, not the signal
+
+`item_numbers` records which 8-K Items a filing disclosed (5.02 is a
+management change, 1.01 a material agreement) when they can be read —
+from a dedicated field or out of prose, with the same expression. When
+nothing resolves, the list is empty and **the signal still raises**: that
+a filing happened is the signal; which Item it disclosed is the detail,
+and an unparseable Item list must not suppress a real material event.
 
 ## What it produces
 
@@ -73,10 +106,11 @@ would reintroduce it.
 
 ## The non-interference guarantee
 
-**This signal has zero influence on watchlist membership or scoring, not
+**These signals have zero influence on watchlist membership or scoring, not
 even as a condition.** `core/market_state/`, `core/scoring/`,
 `core/candidate_detection/eligibility/` and `core/live_scanner/` must
-never import this package or read the `news_volume_signals` table — a
+never import this package or read the `news_volume_signals`,
+`sec_filings` or `sec_filing_signals` tables — a
 security that is `BREAKOUT_READY` purely from price/volume structure
 appears and is evaluated exactly as it would if this module did not
 exist.
@@ -85,15 +119,18 @@ Enforced two ways:
 
 - **Structurally**, on the parse tree —
   `tests/unit/news_signals/test_isolation_from_scoring_and_market_state.py`
-  scans all four packages for any import of `core.news_signals`, any
-  reach into `infra.db.schema.news_signals`, and any mention of
-  `"news_volume_signals"` as a string constant.
-- **Behaviourally** — `tests/integration/intelligence/test_news_signal_isolation.py`
-  gives a security with **zero `canonical_news` rows ever** a real
-  `BREAKOUT_READY` transition and a real score, snapshots the watchlist
-  entry and detail response, attaches the strongest possible news-signal
-  reading (`raised=True`) directly to the same security, and asserts
-  every field except the one meant to change is byte-identical.
+  scans all four packages three ways: for any import of
+  `core.news_signals` (or `core.ownership_signals`), any reach into the
+  schema modules that define their tables, and any mention of those
+  table names as string constants — the route a raw `text()` query would
+  take while importing nothing.
+- **Behaviourally** — `tests/integration/intelligence/test_signal_isolation.py`
+  gives a security with **no news, filing, insider or 13F row ever** a
+  real `BREAKOUT_READY` transition and a real score, snapshots the
+  watchlist entry and detail response, attaches the loudest possible
+  reading of every signal at once, and asserts that the entry, the
+  watchlist's order and the whole score block — components included —
+  are byte-identical afterwards.
 
 This module also does not depend on `core.market_state` even though
 nothing requires that: `orchestrator.py` resolves who to assess via
@@ -104,13 +141,15 @@ as well as the scoring path.
 
 ## Storage and API
 
-`services/intelligence` reads the `news_volume_signals` table directly
-(`reads.py`'s `latest_news_signal` / `latest_news_signals`), the same
-"reads and assembles, computes nothing" boundary the rest of that service
-holds — it never imports this package's compute functions. The result
-appears as `SecurityDetail.news_signal` on `GET
-/intelligence/securities/{ticker}` and as `IntelligenceEntry.news_signal_raised`
-on every watchlist entry, purely additive next to what was already there.
+`services/intelligence` reads both tables directly (`reads.py`'s
+`latest_news_signal` and `latest_sec_filing_signal`, plus their batched
+twins), the same "reads and assembles, computes nothing" boundary the
+rest of that service holds — it never imports this package's compute
+functions. The results appear as `SecurityDetail.news_signal` and
+`SecurityDetail.sec_filing_signal` on `GET
+/intelligence/securities/{ticker}`, and as `news_signal_raised` /
+`sec_filing_raised` on every watchlist entry, purely additive next to
+what was already there.
 
 For full article text, the existing Terminal (Module 19) news endpoint is
 the answer — this module never generates or serves article content.

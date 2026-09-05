@@ -70,7 +70,15 @@ from core.ingestion.deep_refresh import (
     refresh_due_securities,
 )
 from core.ingestion.members import universe_members
+from core.ingestion.ownership import (
+    OwnershipIngestReport,
+    due_members,
+    ingest_filings,
+    ingest_ownership,
+)
+from core.ingestion.phases import current_phases
 from core.ingestion.prices import OhlcvReport, PriceSource, ingest_daily_prices
+from core.ingestion.refresh_log import last_refreshes
 from core.ingestion.strategy import StrategyDecision, select_strategy
 from core.live_scanner.readiness import ReadinessReport, check_readiness
 from core.live_scanner.schedule import as_of_for, scan_date_for
@@ -101,6 +109,10 @@ class IngestionReport:
     strategy: StrategyDecision | None = None
     prices: OhlcvReport | None = None
     deep_refresh: DeepRefreshReport | None = None
+    #: 8-K filings, Form 4 transactions and 13F summaries — the raw data
+    #: Modules 28 and 29 read. `None` when the provider cannot serve those
+    #: endpoints; see `core/ingestion/ownership.py`.
+    ownership: OwnershipIngestReport | None = None
     readiness: ReadinessReport | None = None
     skipped_reason: str | None = None
 
@@ -121,6 +133,7 @@ class IngestionReport:
             "strategy": self.strategy.as_dict() if self.strategy else None,
             "prices": self.prices.as_dict() if self.prices else None,
             "deep_refresh": self.deep_refresh.as_dict() if self.deep_refresh else None,
+            "ownership": self.ownership.as_dict() if self.ownership else None,
             "readiness": self.readiness.as_dict() if self.readiness else None,
             "skipped_reason": self.skipped_reason,
             "healthy": self.healthy,
@@ -205,11 +218,21 @@ async def run_daily_ingestion(
         now=moment,
     )
 
+    ownership = await _ingest_ownership_data(
+        engine,
+        source,
+        members=members,
+        trading_date=trading_date,
+        config=resolved,
+        max_concurrency=settings.providers.fmp_max_concurrency,
+    )
+
     report = IngestionReport(
         trading_date=trading_date,
         strategy=decision,
         prices=prices,
         deep_refresh=deep,
+        ownership=ownership,
         readiness=readiness,
     )
     _log.info(
@@ -217,6 +240,54 @@ async def run_daily_ingestion(
         extra={"event": "ingestion_finished", **report.as_dict()},
     )
     return report
+
+
+async def _ingest_ownership_data(
+    engine: Engine,
+    source: Any,
+    *,
+    members: Any,
+    trading_date: date,
+    config: IngestionConfig,
+    max_concurrency: int,
+) -> OwnershipIngestReport:
+    """The Ultimate-plan half: 8-K in bulk, then Form 4 and 13F per due name.
+
+    Last in the run, and deliberately so. Like the deep refresh it has no
+    deadline — `core/live_scanner/readiness.py` checks OHLCV coverage and
+    nothing else, so nothing downstream waits on these — and unlike the
+    price pull it must not be allowed to spend the margin the scanner
+    depends on.
+
+    Which securities are "due" is Module 26's own tier decision, read from
+    the same `market_state` projection and the same refresh log the
+    fundamentals refresh reads, so the two cadences cannot drift apart.
+    """
+    outcome = OwnershipIngestReport(trading_date=trading_date)
+
+    await ingest_filings(engine, source, members=members, trading_date=trading_date, report=outcome)
+
+    identities = [member.security_id for member in members.members]
+    with engine.begin() as connection:
+        phases = current_phases(connection, identities, config.settings)
+        previous = last_refreshes(connection, identities)
+
+    due = due_members(
+        members,
+        phases=phases,
+        previous=previous,
+        trading_date=trading_date,
+        config=config,
+    )
+    return await ingest_ownership(
+        engine,
+        source,
+        due=due,
+        trading_date=trading_date,
+        config=config,
+        report=outcome,
+        max_concurrency=max_concurrency,
+    )
 
 
 def _readiness(

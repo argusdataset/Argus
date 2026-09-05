@@ -31,10 +31,13 @@ from typing import Any
 from core.market_state.states import WATCHLISTS
 from services.intelligence.schemas import (
     ExplanationBlock,
+    InsiderClusterBlock,
+    InstitutionalOwnershipBlock,
     IntelligenceProvenance,
     NewsSignalBlock,
     RiskBlock,
     ScoreBlock,
+    SecFilingSignalBlock,
     SimilarityBlock,
     SimilarityScope,
     StateBlock,
@@ -46,13 +49,29 @@ __all__ = [
     "NO_SIGNAL",
     "build_explanation",
     "build_freshness",
+    "build_insider_cluster",
+    "build_institutional_ownership",
     "build_news_signal",
+    "build_sec_filing_signal",
     "build_risk",
     "build_score",
     "build_similarity",
     "build_state",
     "watchlists_for_state",
 ]
+
+_INSIDER_EXPLANATIONS: dict[str, str] = {
+    "never_ingested": (
+        "No insider transaction has been recorded for this security, so there is "
+        "nothing to have measured — which is not the same as insiders not buying."
+    ),
+}
+
+_INSTITUTIONAL_EXPLANATIONS: dict[str, str] = {
+    "never_ingested": (
+        "No 13F institutional-ownership summary has been recorded for this security."
+    ),
+}
 
 _NEWS_SIGNAL_EXPLANATIONS: dict[str, str] = {
     "never_ingested": (
@@ -312,6 +331,118 @@ def build_news_signal(row: Any | None) -> NewsSignalBlock:
         ),
         computed_at=row.computed_at,
     )
+
+
+def build_sec_filing_signal(row: Any | None) -> SecFilingSignalBlock:
+    """Module 28's stored 8-K reading, reshaped. Never computed here.
+
+    A missing row is `raised=None` with an `Unavailable` — "not computed
+    yet" — which is *not* the same as the signal's own `False`. The
+    signal has no undetermined state; this block does, because ARGUS may
+    simply not have run it for this security yet, and a client should be
+    able to tell those apart.
+    """
+    if row is None:
+        return SecFilingSignalBlock(
+            unavailable=Unavailable(
+                reason="not_yet_available",
+                explanation=("ARGUS has not computed an SEC-filing reading for this security yet."),
+            )
+        )
+
+    return SecFilingSignalBlock(
+        raised=row.raised,
+        item_numbers=list(row.item_numbers or []),
+        signal_date=row.signal_date,
+        computed_at=row.computed_at,
+    )
+
+
+def build_insider_cluster(row: Any | None) -> InsiderClusterBlock:
+    """Module 29's stored insider reading, reshaped. Never computed here.
+
+    `raised` passes through exactly as stored, including the `None` that
+    means "this security's Form 4 history has never been fetched" — the
+    distinction the whole signal is built around.
+    """
+    if row is None:
+        return InsiderClusterBlock(
+            unavailable=Unavailable(
+                reason="not_yet_available",
+                explanation=(
+                    "ARGUS has not computed an insider-activity reading for this security yet."
+                ),
+            )
+        )
+
+    reason = row.unavailable_reason
+    return InsiderClusterBlock(
+        raised=row.raised,
+        distinct_buyers=row.distinct_purchasers,
+        window_days=row.window_days,
+        min_buyers=row.min_insiders,
+        signal_date=row.signal_date,
+        unavailable=(
+            Unavailable(
+                reason=reason,
+                explanation=_INSIDER_EXPLANATIONS.get(
+                    reason,
+                    "ARGUS could not determine an insider-activity reading for this security.",
+                ),
+            )
+            if reason
+            else None
+        ),
+        computed_at=row.computed_at,
+    )
+
+
+def build_institutional_ownership(row: Any | None) -> InstitutionalOwnershipBlock:
+    """Module 29's stored 13F trend, reshaped. No verdict, by design.
+
+    Change figures stay `None` when the row has no prior quarter, rather
+    than being shown as zero: a first observation has nothing to have
+    changed from.
+    """
+    if row is None:
+        return InstitutionalOwnershipBlock(
+            unavailable=Unavailable(
+                reason="never_ingested",
+                explanation=(
+                    "No 13F institutional-ownership summary has been recorded for this security."
+                ),
+            )
+        )
+
+    reason = row.unavailable_reason
+    return InstitutionalOwnershipBlock(
+        year=row.year,
+        quarter=row.quarter,
+        investors_holding=row.investors_holding,
+        investors_holding_change=row.investors_holding_change,
+        total_shares=_optional_float(row.total_shares),
+        total_shares_change_percent=_optional_float(row.total_shares_change_percent),
+        ownership_percent=_optional_float(row.ownership_percent),
+        prior_year=row.prior_year,
+        prior_quarter=row.prior_quarter,
+        unavailable=(
+            Unavailable(
+                reason=reason,
+                explanation=_INSTITUTIONAL_EXPLANATIONS.get(
+                    reason,
+                    "ARGUS could not determine an ownership trend for this security.",
+                ),
+            )
+            if reason
+            else None
+        ),
+        computed_at=row.computed_at,
+    )
+
+
+def _optional_float(value: Any) -> float | None:
+    """Postgres `Numeric` arrives as `Decimal`. None stays None."""
+    return None if value is None else float(value)
 
 
 def build_state(row: Any | None) -> StateBlock | None:

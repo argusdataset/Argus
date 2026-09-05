@@ -42,6 +42,7 @@ from core.data_validation.universe import list_universe_members_as_of
 from core.live_scanner.schedule import as_of_for, scan_date_for
 from core.news_signals.batch import assess_batch, store_signals
 from core.news_signals.config import NewsSignalConfig
+from core.news_signals.filings import assess_filing_batch, store_filing_signals
 from infra.observability.logging import get_logger
 
 __all__ = ["NewsSignalRunReport", "run_daily_news_signals"]
@@ -59,6 +60,12 @@ class NewsSignalRunReport:
     not_raised: int = 0
     undetermined: int = 0
     stored: int = 0
+    #: The SEC 8-K signal, computed in the same run over the same universe
+    #: and the same `scan_date`. Separate counters rather than shared ones
+    #: because the two signals answer different questions and a run where
+    #: one worked and the other did not should say so.
+    filings_raised: int = 0
+    filings_stored: int = 0
     skipped_reason: str | None = None
 
     @property
@@ -77,6 +84,8 @@ class NewsSignalRunReport:
             "not_raised": self.not_raised,
             "undetermined": self.undetermined,
             "stored": self.stored,
+            "filings_raised": self.filings_raised,
+            "filings_stored": self.filings_stored,
             "skipped_reason": self.skipped_reason,
             "healthy": self.healthy,
         }
@@ -124,6 +133,20 @@ def run_daily_news_signals(
         )
         stored = store_signals(connection, list(signals.values()))
 
+        # The 8-K signal, in the same transaction and over the same
+        # universe: both read tables Module 26 already filled, both are
+        # per-security-per-day, and computing them together means one
+        # universe listing and one schedule resolution rather than two
+        # that could disagree about which day it is.
+        filings = assess_filing_batch(
+            connection,
+            security_ids,
+            scan_date=scan_date,
+            as_of=as_of,
+            config=resolved,
+        )
+        filings_stored = store_filing_signals(connection, list(filings.values()))
+
     report = NewsSignalRunReport(
         scan_date=scan_date,
         universe_size=len(security_ids),
@@ -131,6 +154,8 @@ def run_daily_news_signals(
         not_raised=sum(1 for signal in signals.values() if signal.raised is False),
         undetermined=sum(1 for signal in signals.values() if signal.raised is None),
         stored=stored,
+        filings_raised=sum(1 for signal in filings.values() if signal.raised),
+        filings_stored=filings_stored,
     )
     _log.info(
         "news signal run finished",

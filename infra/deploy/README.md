@@ -21,7 +21,7 @@ drifts from it.
 
 ## 1. What gets deployed
 
-Eleven processes from one image. `infra/deploy/processes.py` is the single
+Twelve processes from one image. `infra/deploy/processes.py` is the single
 definition; this table is a reading of it.
 
 | Service        | Kind | Command                                          | Health check   | Schedule       |
@@ -37,6 +37,7 @@ definition; this table is a reading of it.
 | `telegram_dispatch` | cron | `python -m infra.deploy.telegram_dispatch`  | —              | `0 23 * * 1-5` |
 | `retention`    | cron | `python -m infra.deploy.retention`               | —              | `0 3 * * *`    |
 | `news_signals` | cron | `python -m infra.deploy.news_signals`            | —              | `30 23 * * 1-5` |
+| `ownership_signals` | cron | `python -m infra.deploy.ownership_signals`  | —              | `45 23 * * 1-5` |
 
 Only `identity` carries `preDeployCommand`. See §4.
 
@@ -120,12 +121,17 @@ except configuration.
 
 ### Secrets
 
-**A connection string is the whole database configuration.** `DATABASE_URL`
-is resolved *before* `AppConfig` is validated, which matters because
-`AppConfig` requires `database.port`, `database.name` and `database.user`
-and a platform injects none of them. Validating first made the
-supplied-URL path unreachable on exactly the platforms it exists for, and
-that is not hypothetical — it is how the first Railway deploy crashed:
+**A connection string is the whole database configuration.** `AppConfig`
+derives `database.host`, `.port`, `.name` and `.user` from `DATABASE_URL`
+itself, with explicit `ARGUS_DATABASE__*` values still winning field by
+field. The embedded password is deliberately not read: it stays out of
+the config object and is resolved at connection time through
+`SecretsProvider`, so a logged config still cannot leak it.
+
+That was not always true, and the history is worth keeping. `AppConfig`
+used to require those three fields unconditionally, which a platform
+injects none of — so `get_config()` raised in every deployed process.
+It is how the first Railway deploy crashed:
 
 ```
 pydantic_core.ValidationError: 3 validation errors for AppConfig
@@ -135,9 +141,20 @@ database.user  Field required
   File "/app/infra/deploy/asgi.py", line 98, in build_engine
 ```
 
-Fixed in `infra/db/connection.py`; `tests/integration/deploy/test_platform_environment.py`
-boots every entrypoint from a connection string and nothing else, so it
-cannot come back.
+`infra/db/connection.py` worked around it by resolving the URL before
+validating, which fixed that one function and left every other caller of
+`get_config()` broken — catalogued as G3 in
+`docs/architecture/KNOWN_ISSUES.md` and now **resolved at the root** in
+`packages/config/settings.py`.
+
+Three tests keep it from coming back:
+`tests/integration/deploy/test_platform_environment.py` boots every
+entrypoint from a connection string and nothing else;
+`tests/unit/config/test_database_url.py` runs G3's own repro in a
+scrubbed subprocess; and
+`tests/integration/deploy/test_ingestion_process.py` starts the ingestion
+cron the way Railway starts it and asserts it reaches its own refusal
+rather than a configuration error.
 
 
 Railway environment variables → `EnvironmentSecretsProvider` → the
@@ -586,7 +603,7 @@ generator, not an instruction.
 
 ### Live state, 2026-09-04
 
-Nine of the eleven processes this file now defines are deployed and
+Nine of the twelve processes this file now defines are deployed and
 healthy, confirmed directly against Railway rather than assumed from this
 file (`environment-status`, `list-services` — see the note below on why
 that check, not this section, is the source of truth going forward):
@@ -596,9 +613,10 @@ that check, not this section, is the source of truth going forward):
 nine — `environment-status` still reports exactly ten Railway services
 total (the nine above plus Postgres), unchanged since Module 27.
 
-`ingestion` (Module 26) and `news_signals` (Module 28) are the two
-processes with no Railway service at all yet — both added to
-`processes.py` after this project's last deploy. Nothing has ever
+`ingestion` (Module 26), `news_signals` (Module 28) and
+`ownership_signals` (Module 29) are the three processes with no Railway
+service at all yet — all added to `processes.py` after this project's
+last deploy. Nothing has ever
 actually been ingested, `canonical_ohlcv` is still empty, and the scanner
 still has nothing to scan even now that its readiness check is no longer
 structurally broken (G1, `docs/architecture/KNOWN_ISSUES.md`, fixed): an
@@ -606,19 +624,23 @@ empty table has zero coverage regardless of what cutoff is applied to it.
 No universe version has been built or set either
 (`ARGUS_UNIVERSE_VERSION`), so the scanner and both not-yet-created
 processes would refuse to run at all today. Create `ingestion` first —
-`news_signals` reads `canonical_news`, which only `ingestion`'s deep
-refresh fills, so deploying `news_signals` before `ingestion` would give
-it a real universe to assess and nothing in it to count. Expect
+both signal crons read tables only `ingestion` fills — `canonical_news`
+for the news signals, `sec_filings`, `insider_trades` and
+`institutional_ownership` for the rest — so deploying either before
+`ingestion` would give it a real universe to assess and nothing in it to
+count. Expect
 `ingestion` to hit G3 on its first real run (`get_config()` cannot be
 loaded in the deployed environment) — G3 has not yet been exercised in
 production, because the one process that would trigger it does not exist
-yet; `news_signals` does not carry that exposure at all (see
-`core/news_signals/orchestrator.py`).
+yet; neither signal cron carries that exposure at all (see
+`core/news_signals/orchestrator.py`), and G3 itself is now fixed at the
+root regardless — `AppConfig` derives its database group from
+`DATABASE_URL`.
 
 The other nine build from the Dockerfile, run the production profile,
 and carry the health check, restart policy and — on `identity` — the
 pre-deploy migration. A `railway config plan` should therefore report
-little or nothing to change on those nine, and two services to create.
+little or nothing to change on those nine, and three services to create.
 
 **A note on how this section goes stale, since it already has once.**
 This file previously said three of ten were live, written before Module

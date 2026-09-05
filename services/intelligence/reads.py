@@ -43,10 +43,20 @@ from infra.db.schema.intelligence import (
     signals,
 )
 from infra.db.schema.news_signals import news_volume_signals
+from infra.db.schema.ownership_signals import (
+    insider_cluster_signals,
+    institutional_ownership_signals,
+)
+from infra.db.schema.sec_filings import sec_filing_signals
 
 __all__ = [
+    "latest_insider_signal",
+    "latest_insider_signals",
+    "latest_institutional_signal",
     "latest_news_signal",
     "latest_news_signals",
+    "latest_sec_filing_signal",
+    "latest_sec_filing_signals",
     "latest_signal",
     "latest_similarity",
     "pending_events",
@@ -208,19 +218,103 @@ def latest_news_signals(connection: Connection, security_ids: list[UUID]) -> dic
     `security_id`, the same "first write wins, in order" idiom
     `latest_similarity` already uses for `historical_similarity_results`.
     """
+    return _latest_per_security(
+        connection,
+        news_volume_signals,
+        security_ids,
+        order_by=desc(news_volume_signals.c.signal_date),
+    )
+
+
+def _latest_per_security(
+    connection: Connection,
+    table: Any,
+    security_ids: list[UUID],
+    *,
+    order_by: Any,
+) -> dict[UUID, Any]:
+    """Newest row per security from a per-security-per-period table.
+
+    Shared by the four signal readers because they are the same query
+    four times over — one round trip for the whole list, ordered so the
+    first row seen per security is the one to keep. Written once so a fix
+    to the ordering is a fix in one place rather than in four.
+    """
     if not security_ids:
         return {}
 
     rows = connection.execute(
-        select(news_volume_signals)
-        .where(news_volume_signals.c.security_id.in_(security_ids))
-        .order_by(desc(news_volume_signals.c.signal_date))
+        select(table).where(table.c.security_id.in_(security_ids)).order_by(order_by)
     ).all()
 
     latest: dict[UUID, Any] = {}
     for row in rows:
         latest.setdefault(row.security_id, row)
     return latest
+
+
+def latest_sec_filing_signal(connection: Connection, security_id: UUID) -> Any | None:
+    """This security's most recent stored `sec_filing_signals` row.
+
+    Same shape as `latest_news_signal` and for the same reason: one row
+    per security per day, upserted, so "most recent" is the highest
+    `signal_date` and nothing here deduplicates anything.
+    """
+    return connection.execute(
+        select(sec_filing_signals)
+        .where(sec_filing_signals.c.security_id == security_id)
+        .order_by(desc(sec_filing_signals.c.signal_date))
+        .limit(1)
+    ).one_or_none()
+
+
+def latest_sec_filing_signals(connection: Connection, security_ids: list[UUID]) -> dict[UUID, Any]:
+    """The most recent filing row per security, in one query."""
+    return _latest_per_security(
+        connection,
+        sec_filing_signals,
+        security_ids,
+        order_by=desc(sec_filing_signals.c.signal_date),
+    )
+
+
+def latest_insider_signal(connection: Connection, security_id: UUID) -> Any | None:
+    """This security's most recent stored `insider_cluster_signals` row."""
+    return connection.execute(
+        select(insider_cluster_signals)
+        .where(insider_cluster_signals.c.security_id == security_id)
+        .order_by(desc(insider_cluster_signals.c.signal_date))
+        .limit(1)
+    ).one_or_none()
+
+
+def latest_insider_signals(connection: Connection, security_ids: list[UUID]) -> dict[UUID, Any]:
+    """The most recent insider row per security, in one query."""
+    return _latest_per_security(
+        connection,
+        insider_cluster_signals,
+        security_ids,
+        order_by=desc(insider_cluster_signals.c.signal_date),
+    )
+
+
+def latest_institutional_signal(connection: Connection, security_id: UUID) -> Any | None:
+    """This security's most recent stored 13F trend row.
+
+    Ordered by `(year, quarter)` rather than by a date, because this one
+    is keyed by quarter: the row for 2026 Q2 is the answer all through
+    the six weeks before Q3's filings land, and `computed_at` moving
+    daily does not make a newer quarter exist.
+    """
+    return connection.execute(
+        select(institutional_ownership_signals)
+        .where(institutional_ownership_signals.c.security_id == security_id)
+        .order_by(
+            desc(institutional_ownership_signals.c.year),
+            desc(institutional_ownership_signals.c.quarter),
+        )
+        .limit(1)
+    ).one_or_none()
 
 
 def state_row(connection: Connection, security_id: UUID) -> Any | None:

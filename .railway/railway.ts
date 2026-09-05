@@ -7,10 +7,10 @@
 // for four settings ARGUS needs, which are set on the Railway
 // services themselves — see dashboard_settings() in
 // infra/deploy/railway.py for the exact values:
-//   - dockerfile: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, news_signals
+//   - dockerfile: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
 //   - preDeployCommand: identity
-//   - cronSchedule: ingestion, scanner, telegram_dispatch, retention, news_signals
-//   - restartPolicy: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, news_signals
+//   - cronSchedule: ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
+//   - restartPolicy: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
 //
 // Secrets appear here as names bound to preserve(), never as values.
 // preserve() keeps what Railway already holds; it cannot create a
@@ -164,6 +164,17 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Module 29. Insider-buy clusters and 13F institutional-ownership trend. Display-only annotations in services/intelligence; never read by scoring or market_state.
+  const ownership_signals = service("ownership_signals", {
+    source: github("argusdataset/Argus", { branch: "main" }),
+    start: "python -m infra.deploy.ownership_signals",
+    env: {
+      ARGUS_ENV: prod ? "production" : "staging",
+      DATABASE_URL: db.env.DATABASE_URL,
+      ARGUS_UNIVERSE_VERSION: preserve(),
+    },
+  });
+
   // Module 28. Reactive news-volume signal: unusually more canonical_news today than this security's own trailing baseline. Display-only annotation in services/intelligence; never read by scoring or market_state.
   const news_signals = service("news_signals", {
     source: github("argusdataset/Argus", { branch: "main" }),
@@ -176,6 +187,6 @@ export default defineRailway((ctx) => {
   });
 
   return project("passionate-unity", {
-    resources: [db, terminal, public_stats, intelligence, identityService, telegram, health, ingestion, scanner, telegram_dispatch, retention, news_signals],
+    resources: [db, terminal, public_stats, intelligence, identityService, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals],
   });
 });

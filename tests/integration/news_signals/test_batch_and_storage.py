@@ -18,6 +18,7 @@ from core.news_signals.batch import assess_batch, store_signals
 from core.news_signals.config import NewsSignalConfig
 from core.news_signals.orchestrator import run_daily_news_signals
 from infra.db.schema.news_signals import news_volume_signals
+from infra.db.schema.sec_filings import sec_filing_signals
 
 SCAN_DATE = date(2026, 3, 10)
 AS_OF = datetime(2026, 3, 10, 21, 0, tzinfo=UTC)
@@ -215,6 +216,44 @@ def test_the_run_report_serializes_to_a_complete_dict(engine, universe):
         "not_raised",
         "undetermined",
         "stored",
+        # The 8-K signal shares this run and reports its own counters:
+        # a run where the volume signal worked and the filing signal did
+        # not should be visibly that, not an average of the two.
+        "filings_raised",
+        "filings_stored",
         "skipped_reason",
         "healthy",
     }
+
+
+def test_one_run_computes_both_the_volume_and_the_filing_signal(
+    engine, universe, add_article_committed
+):
+    """The two signals share a run, a universe and a scan date.
+
+    Computing them together is what makes them agree about which day it
+    is; the counters stay separate so the run can still say which of the
+    two did the work.
+    """
+    version_id, identities = universe(("ZZBOTH",))
+
+    report = run_daily_news_signals(engine, universe_version_id=version_id, now=NOW)
+
+    assert report.scan_date == ORCHESTRATOR_SCAN_DATE
+    assert report.universe_size == 1
+    # A security with no news and no filings: both signals are computed
+    # and stored, the volume one undetermined and the filing one a
+    # measured False.
+    assert report.stored == 1
+    assert report.filings_stored == 1
+    assert report.filings_raised == 0
+
+    with engine.connect() as verify:
+        row = verify.execute(
+            select(sec_filing_signals).where(
+                sec_filing_signals.c.security_id == identities["ZZBOTH"]
+            )
+        ).one_or_none()
+    assert row is not None
+    assert row.raised is False
+    assert row.signal_date == ORCHESTRATOR_SCAN_DATE

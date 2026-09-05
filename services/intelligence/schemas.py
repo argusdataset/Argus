@@ -52,12 +52,15 @@ __all__ = [
     "ExplanationBlock",
     "Freshness",
     "IntelligenceEntry",
+    "InsiderClusterBlock",
+    "InstitutionalOwnershipBlock",
     "IntelligenceProvenance",
     "IntelligenceWatchlist",
     "NewsSignalBlock",
     "OverlayResponse",
     "RiskBlock",
     "ScoreBlock",
+    "SecFilingSignalBlock",
     "SecurityDetail",
     "SimilarityBlock",
     "SimilarityScope",
@@ -163,6 +166,16 @@ class IntelligenceEntry(BaseModel):
     #: computed for this security yet. Purely additive: absent or `None`
     #: changes nothing else about this entry's state or score.
     news_signal_raised: bool | None = None
+    #: Module 28's same-day 8-K reading. `None` here means "not computed
+    #: for this security yet" rather than the undetermined state the
+    #: signal itself does not have — see `SecFilingSignalBlock`.
+    sec_filing_raised: bool | None = None
+    #: Module 29's insider-buy cluster reading, tri-state.
+    insider_cluster_raised: bool | None = None
+    #: The 13F trend is deliberately absent from list entries. It is a
+    #: quarterly direction, not a daily state, and a live watchlist is
+    #: the wrong surface for a number that moves four times a year —
+    #: `GET /intelligence/securities/{ticker}` carries it instead.
 
 
 class IntelligenceWatchlist(BaseModel):
@@ -272,6 +285,75 @@ class NewsSignalBlock(BaseModel):
     computed_at: datetime | None = None
 
 
+class SecFilingSignalBlock(BaseModel):
+    """Module 28's same-day SEC 8-K reading. Display-only, additive.
+
+    `raised` is a plain bool here, unlike every other signal block, and
+    deliberately: a filing either happened on a date or it did not.
+    There is no baseline to be short of, so there is no undetermined
+    state to report — see `core/news_signals/filings.py`.
+
+    `item_numbers` carries which 8-K Items the filing disclosed (5.02 is
+    a management change, 1.01 a material agreement) when they could be
+    read. An empty list beside `raised: true` means a filing happened and
+    its items could not be parsed, not that it disclosed nothing.
+    """
+
+    raised: bool | None = None
+    item_numbers: list[str] = Field(default_factory=list)
+    signal_date: date | None = None
+    unavailable: Unavailable | None = None
+    computed_at: datetime | None = None
+
+
+class InsiderClusterBlock(BaseModel):
+    """Module 29's insider-buy cluster reading. Display-only, additive.
+
+    Counts *distinct people* who made an open-market purchase in the
+    trailing window — not transactions, and not grants or option
+    exercises, which are compensation on somebody else's schedule rather
+    than a decision to buy.
+
+    `raised` is tri-state: `None` means ARGUS has never fetched this
+    security's Form 4 history, which is a different fact from "insiders
+    are not buying" and must never be shown as one.
+    """
+
+    raised: bool | None = None
+    distinct_buyers: int | None = None
+    window_days: int | None = None
+    min_buyers: int | None = None
+    signal_date: date | None = None
+    unavailable: Unavailable | None = None
+    computed_at: datetime | None = None
+
+
+class InstitutionalOwnershipBlock(BaseModel):
+    """Module 29's 13F ownership trend. Display-only, and no verdict.
+
+    The one block in this API with no `raised` field of any kind, because
+    quarterly ownership moving is a direction rather than an event. A
+    boolean would have to encode an opinion about how much movement
+    matters; that opinion belongs to the reader.
+
+    Every change figure is `None` when there is no prior quarter to
+    compare against — a first observation has nothing to have changed
+    from, and reporting zero would claim a stability nobody measured.
+    """
+
+    year: int | None = None
+    quarter: int | None = None
+    investors_holding: int | None = None
+    investors_holding_change: int | None = None
+    total_shares: float | None = None
+    total_shares_change_percent: float | None = None
+    ownership_percent: float | None = None
+    prior_year: int | None = None
+    prior_quarter: int | None = None
+    unavailable: Unavailable | None = None
+    computed_at: datetime | None = None
+
+
 class ExplanationBlock(BaseModel):
     """Module 16's output, passed through unchanged.
 
@@ -325,6 +407,12 @@ class SecurityDetail(BaseModel):
     #: Module 28's reactive news-volume reading. Additive only — see the
     #: block's own docstring for the non-interference guarantee.
     news_signal: NewsSignalBlock
+    #: Module 28's same-day SEC 8-K reading. Same guarantee.
+    sec_filing_signal: SecFilingSignalBlock
+    #: Module 29's insider-buy cluster reading. Same guarantee.
+    insider_cluster: InsiderClusterBlock
+    #: Module 29's 13F ownership trend — figures and a change, no verdict.
+    institutional_ownership: InstitutionalOwnershipBlock
     freshness: Freshness
 
 

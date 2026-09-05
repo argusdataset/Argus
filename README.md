@@ -13,7 +13,7 @@ deleted. ARGUS surfaces evidence and probabilities; it does not make trading
 decisions and is not (yet) a commercial product — the near-term goal is to
 run it honestly for years and build a real track record first.
 
-This repository was built **module by module**, and all 27 planned modules
+This repository was built **module by module**, and all 29 modules
 are now built (deployment to Railway is in progress — see
 [Status](#status)). See
 [`docs/architecture/ARGUS_CONTEXT.md`](docs/architecture/ARGUS_CONTEXT.md)
@@ -52,6 +52,8 @@ the audited, currently-open gaps (below in [Status](#status)).
 | 25 | Production deployment & disaster recovery | `infra/deploy/` |
 | 26 | Daily ingestion orchestration & deep refresh | `core/ingestion/` |
 | 27 | Telegram alerts on BREAKOUT_READY | `services/telegram/` |
+| 28 | News-volume anomaly & SEC 8-K signals | `core/news_signals/` |
+| 29 | Insider clusters & 13F ownership trend | `core/ownership_signals/` |
 
 A Phase 1 Integration Audit followed Module 25 and produced
 [`docs/architecture/KNOWN_ISSUES.md`](docs/architecture/KNOWN_ISSUES.md) (also
@@ -81,7 +83,8 @@ argus/
 │   │   └── evaluation/
 │   ├── live_scanner/                  # Module 18 — the scheduled scanner
 │   ├── ingestion/                     # Module 26 — daily ingestion orchestration
-│   └── news_signals/                  # Module 28 — reactive news-volume signal (display-only)
+│   ├── news_signals/                  # Module 28 — news-volume anomaly + SEC 8-K (display-only)
+│   └── ownership_signals/             # Module 29 — insider clusters + 13F trend (display-only)
 ├── services/
 │   ├── terminal/                      # Module 19 — fundamentals/news, independent of scoring
 │   ├── watchlist/                     # User watchlists (query layer over core/market_state)
@@ -132,9 +135,9 @@ argus/
 - **CI**: `.github/workflows/ci.yml` installs dependencies, lints, and runs
   the test suite.
 - **Deployment**: Railway, one service per module boundary (scanner,
-  ingestion, news_signals, telegram webhook + dispatch, terminal,
-  public_stats, intelligence, identity, retention, health) plus managed
-  Postgres — see `infra/deploy/README.md` and `.railway/railway.ts`.
+  ingestion, news_signals, ownership_signals, telegram webhook + dispatch,
+  terminal, public_stats, intelligence, identity, retention, health) plus
+  managed Postgres — see `infra/deploy/README.md` and `.railway/railway.ts`.
 
 ## Dev environment setup
 
@@ -166,7 +169,7 @@ pytest
 
 ## Status
 
-All 28 modules are built, with a deployable Docker image and Railway IaC
+All 29 modules are built, with a deployable Docker image and Railway IaC
 covering every one of them (see `infra/deploy/`). Deployed is a narrower
 claim, and the number below is checked directly against Railway
 (`environment-status`, `list-services`) rather than copied from
@@ -174,14 +177,14 @@ claim, and the number below is checked directly against Railway
 prose, goes stale the moment a new service is created, and did: an
 earlier version of this file's Status section repeated a three-of-ten
 count from it that was already out of date by two modules' worth of
-services. As of 2026-09-04, checked directly: nine of the eleven
+services. As of 2026-09-04, checked directly: nine of the twelve
 processes `infra/deploy/processes.py` now defines run on Railway and
 report zero issues — `terminal` (as `Argus`), `public_stats`, `identity`,
 `intelligence`, `health` and `telegram` online, `scanner`,
 `telegram_dispatch` and `retention` ready as cron; `environment-status`
 still reports ten Railway services total (the nine plus Postgres).
-**`ingestion`** (Module 26) and **`news_signals`** (Module 28) have no
-Railway service yet — see `infra/deploy/README.md`'s "Live state" section
+**`ingestion`** (Module 26), **`news_signals`** (Module 28) and
+**`ownership_signals`** (Module 29) have no Railway service yet — see `infra/deploy/README.md`'s "Live state" section
 for detail, but verify against Railway directly before repeating a count
 from it again. A Phase 1 Integration Audit has run against the deployment
 (`docs/architecture/KNOWN_ISSUES.md`). What's tracked there as open, as of
