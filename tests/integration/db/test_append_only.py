@@ -254,3 +254,87 @@ def test_installed_guards_match_declared_tables(engine: Engine):
     assert guarded_no_delete == set(NO_DELETE_TABLES)
     # Every guarded table blocks TRUNCATE, whichever strength it uses.
     assert guarded_truncate == set(APPEND_ONLY_TABLES) | set(NO_DELETE_TABLES)
+
+
+# --------------------------------------------------------------------------
+# Migration 0018: the Terminal's Ultimate-plan tables joined the guard
+# --------------------------------------------------------------------------
+
+
+#: One insertable row per table migration 0018 added. Written out rather
+#: than generated, because a row-level trigger only fires on a row: an
+#: UPDATE matching nothing succeeds trivially and would prove nothing.
+_MIGRATION_0018_ROWS: dict[str, str] = {
+    "canonical_disclosures": (
+        "INSERT INTO canonical_disclosures "
+        "(security_id, disclosure_type, fiscal_period, event_time, observation_time, "
+        "availability_time, ingestion_time, data) "
+        "VALUES (:sid, 'ANALYST_ESTIMATES', :label, now(), now(), now(), now(), '{}'::jsonb)"
+    ),
+    "canonical_snapshots": (
+        "INSERT INTO canonical_snapshots "
+        "(security_id, snapshot_type, event_time, observation_time, availability_time, "
+        "ingestion_time, data) "
+        "VALUES (:sid, :label, now(), now(), now(), now(), '{}'::jsonb)"
+    ),
+    "analyst_grades": (
+        "INSERT INTO analyst_grades "
+        "(security_id, event_time, observation_time, availability_time, ingestion_time, "
+        "grading_company, data) "
+        "VALUES (:sid, now(), now(), now(), now(), :label, '{}'::jsonb)"
+    ),
+    "technical_indicators": (
+        "INSERT INTO technical_indicators "
+        "(security_id, indicator, period_length, timeframe, event_time, observation_time, "
+        "availability_time, ingestion_time, data) "
+        "VALUES (:sid, :label, 14, '1day', now(), now(), now(), now(), '{}'::jsonb)"
+    ),
+}
+
+
+def _seed_0018_row(engine: Engine, table: str) -> None:
+    """One row in `table`, so an UPDATE has something to fire the guard on."""
+    with engine.begin() as conn:
+        security_id = conn.execute(text("SELECT id FROM security_identity LIMIT 1")).scalar_one()
+        conn.execute(
+            text(_MIGRATION_0018_ROWS[table]),
+            {"sid": security_id, "label": f"guard-{uuid.uuid4().hex[:8]}"},
+        )
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["canonical_disclosures", "canonical_snapshots", "analyst_grades", "technical_indicators"],
+)
+def test_migration_0018_tables_refuse_an_update(engine: Engine, table: str):
+    """The guard fires on the tables migration 0018 added, in the database.
+
+    `test_installed_guards_match_declared_tables` proves a trigger with
+    the right *name* exists. This proves it does something — the two are
+    not the same claim, and a trigger created against the wrong function
+    would satisfy the first and not the second.
+
+    It matters more here than for most guarded tables:
+    `services/terminal/stored.py` answers "the latest revision knowable
+    at this instant" by keeping every earlier observation. An UPDATE that
+    succeeded would not just lose history, it would make that query
+    return an answer that was never true.
+    """
+    _seed_0018_row(engine, table)
+
+    with pytest.raises(REJECTED) as exc_info, engine.begin() as conn:
+        conn.execute(text(f"UPDATE {table} SET ingestion_time = now()"))
+
+    assert "append-only" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["canonical_disclosures", "canonical_snapshots", "analyst_grades", "technical_indicators"],
+)
+def test_migration_0018_tables_refuse_a_truncate(engine: Engine, table: str):
+    """TRUNCATE fires no row-level trigger, so it needs its own guard."""
+    _seed_0018_row(engine, table)
+
+    with pytest.raises(REJECTED), engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE TABLE {table}"))

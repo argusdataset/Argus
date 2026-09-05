@@ -56,8 +56,22 @@ from pydantic import BaseModel, Field
 from services.shared.schemas import Unavailable
 
 __all__ = [
+    "AnalystEstimatePeriod",
+    "AnalystEstimatesResponse",
+    "AnalystGradeAction",
+    "AnalystGradesResponse",
     "BarsResponse",
     "CompanyProfile",
+    "CompensationRecord",
+    "ExecutiveCompensationResponse",
+    "FundHoldingsResponse",
+    "IndicatorPoint",
+    "IndicatorResponse",
+    "OwnershipResponse",
+    "PeersResponse",
+    "PriceTargetResponse",
+    "TranscriptRecord",
+    "TranscriptsResponse",
     "DatafeedConfig",
     "FinancialStatement",
     "FundamentalsResponse",
@@ -288,3 +302,200 @@ class ScanStatusResponse(BaseModel):
     setups_opened: int = 0
     excluded_count: int = 0
     explanation: str
+
+
+# --------------------------------------------------------------------------
+# Ultimate-plan data (Vazifa 4)
+#
+# Every response below follows the same two rules as the fundamentals
+# ones above. Nothing is computed: each `data` payload is the provider's
+# own row, unrenamed and unfiltered, exactly as `FinancialStatement`
+# passes statements through. And absence is always an `Unavailable` with
+# a reason, never an empty object or a null — see `stored.py`.
+#
+# One field is deliberately **absent everywhere**: short interest. FMP
+# exposes no such endpoint on any plan, so there is nothing honest to put
+# in it. An always-null field would look like a gap ARGUS could close;
+# leaving it out says plainly that this data does not exist here. See
+# services/terminal/README.md.
+# --------------------------------------------------------------------------
+
+
+class AnalystEstimatePeriod(BaseModel):
+    """Consensus figures for one fiscal period, as the provider gave them."""
+
+    fiscal_period: str
+    fiscal_period_end: datetime | None = None
+    availability_time: datetime
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalystEstimatesResponse(BaseModel):
+    """Forward consensus, newest period first.
+
+    A forecast, not a filing — which is why these live in
+    `canonical_disclosures` rather than beside the statements, and why
+    nothing in ARGUS scores them.
+    """
+
+    security: CompanyProfile
+    as_of: datetime
+    periods: list[AnalystEstimatePeriod] = Field(default_factory=list)
+    unavailable: Unavailable | None = None
+
+
+class PriceTargetResponse(BaseModel):
+    """The consensus target and the counts behind it, kept apart.
+
+    Two endpoints, two payloads, not merged: the consensus reports the
+    figures and the summary reports how many analysts stand behind them,
+    and a reader looking at a surprising number should be able to see
+    which said what.
+    """
+
+    security: CompanyProfile
+    as_of: datetime
+    consensus: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
+    observed_at: datetime | None = None
+    unavailable: Unavailable | None = None
+
+
+class AnalystGradeAction(BaseModel):
+    """One firm's rating action, in the firm's own words.
+
+    `action`, `previous_grade` and `new_grade` are stored and served
+    unchanged. ARGUS does not decide what a house meant by "Market
+    Perform", and normalising these into a scale would be exactly the
+    kind of interpretation the Terminal does not do.
+    """
+
+    graded_at: datetime
+    grading_company: str
+    action: str | None = None
+    previous_grade: str | None = None
+    new_grade: str | None = None
+
+
+class AnalystGradesResponse(BaseModel):
+    security: CompanyProfile
+    as_of: datetime
+    grades: list[AnalystGradeAction] = Field(default_factory=list)
+    unavailable: Unavailable | None = None
+
+
+class CompensationRecord(BaseModel):
+    """One executive's pay for one fiscal year, as disclosed."""
+
+    fiscal_period: str
+    fiscal_period_end: datetime | None = None
+    availability_time: datetime
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutiveCompensationResponse(BaseModel):
+    security: CompanyProfile
+    as_of: datetime
+    disclosures: list[CompensationRecord] = Field(default_factory=list)
+    unavailable: Unavailable | None = None
+
+
+class TranscriptRecord(BaseModel):
+    """One earnings call. The text is passed through, never summarised."""
+
+    fiscal_period: str
+    held_at: datetime | None = None
+    availability_time: datetime
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class TranscriptsResponse(BaseModel):
+    security: CompanyProfile
+    as_of: datetime
+    transcripts: list[TranscriptRecord] = Field(default_factory=list)
+    unavailable: Unavailable | None = None
+
+
+class PeersResponse(BaseModel):
+    """The provider's peer group. ARGUS does not pick comparables."""
+
+    security: CompanyProfile
+    as_of: datetime
+    peers: list[str] = Field(default_factory=list)
+    observed_at: datetime | None = None
+    unavailable: Unavailable | None = None
+
+
+class FundHoldingsResponse(BaseModel):
+    """What a fund held when it last disclosed.
+
+    Empty for an operating company, and correctly so — but note that
+    ARGUS cannot tell the two apart, so a company with no holdings and a
+    fund never ingested both report `NEVER_INGESTED`. See
+    `core/ingestion/terminal_data.py` on the missing security-type flag.
+    """
+
+    security: CompanyProfile
+    as_of: datetime
+    holdings: list[dict[str, Any]] = Field(default_factory=list)
+    position_count: int = 0
+    source: str | None = None
+    observed_at: datetime | None = None
+    unavailable: Unavailable | None = None
+
+
+class OwnershipResponse(BaseModel):
+    """Institutional ownership, as the provider's 13F summary reported it.
+
+    Every figure here is FMP's own. ARGUS does not compute an ownership
+    percentage from share counts and a float it holds separately — that
+    would be inference, and a number no other part of the system could
+    reproduce. `data` carries the untouched summary beside the resolved
+    fields for exactly that reason.
+
+    **Insider ownership percentage is absent**, and not by oversight: FMP
+    reports insider *transactions*, not a held percentage, so there is no
+    provider figure to show. Deriving one from the transaction history
+    would be ARGUS computing, which this endpoint exists not to do.
+
+    Short interest is absent everywhere for a different reason — the
+    provider has no such endpoint at all. See the block comment above.
+    """
+
+    security: CompanyProfile
+    as_of: datetime
+    fiscal_period: str | None = None
+    #: Percent of shares outstanding held by 13F filers, as reported.
+    institutional_ownership_percent: float | None = None
+    investors_holding: int | None = None
+    total_shares: float | None = None
+    #: The whole provider summary, unrenamed.
+    data: dict[str, Any] = Field(default_factory=dict)
+    observed_at: datetime | None = None
+    unavailable: Unavailable | None = None
+
+
+class IndicatorPoint(BaseModel):
+    """One indicator value for one bar."""
+
+    event_time: datetime
+    value: float | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class IndicatorResponse(BaseModel):
+    """One provider-computed indicator series.
+
+    `indicator`, `period_length` and `timeframe` are echoed back because
+    they are part of what the numbers mean: a 14-period RSI and a
+    50-period RSI are different series, and a chart that lost track of
+    which it drew would be quietly wrong.
+    """
+
+    security: CompanyProfile
+    as_of: datetime
+    indicator: str
+    period_length: int
+    timeframe: str
+    points: list[IndicatorPoint] = Field(default_factory=list)
+    unavailable: Unavailable | None = None

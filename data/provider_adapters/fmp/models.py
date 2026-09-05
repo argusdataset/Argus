@@ -223,6 +223,88 @@ class SecFiling(FmpRecord):
     form_type: str | None = None
 
 
+class AnalystEstimate(FmpRecord):
+    """Consensus revenue/EPS forecasts for one fiscal period.
+
+    A forecast, not a filing — which is why it is stored in
+    `canonical_disclosures` rather than beside the statements. Every
+    figure stays in `raw`; the period label is resolved downstream
+    through `FIELD_ALIASES`.
+    """
+
+    symbol: str
+
+
+class PriceTarget(FmpRecord):
+    """One half of the price-target picture, named by which half.
+
+    `source` is `"consensus"` or `"summary"` — the two endpoints report
+    different things (the target figures, and the counts behind them) and
+    merging them at fetch time would lose which number came from where.
+    """
+
+    symbol: str
+    source: str
+
+
+class AnalystGrade(FmpRecord):
+    """One firm's rating action: who, when, from what, to what."""
+
+    symbol: str
+
+
+class ExecutiveCompensation(FmpRecord):
+    """Proxy-statement compensation for one executive in one fiscal year."""
+
+    symbol: str
+
+
+class SecurityPeerGroup(FmpRecord):
+    """The provider's peer list for one symbol."""
+
+    symbol: str
+
+
+class EarningsTranscript(FmpRecord):
+    """One earnings call's transcript.
+
+    `year`/`quarter` are the request parameters when the fetcher was
+    given them — the adapter controls those regardless of what the
+    response echoes — and are resolved from the payload otherwise.
+    """
+
+    symbol: str
+    year: int | None = None
+    quarter: int | None = None
+
+
+class FundHolding(FmpRecord):
+    """One position held by an ETF or mutual fund.
+
+    Both endpoints produce this: an ETF's holdings and a mutual fund's
+    disclosure are the same kind of fact about the same kind of vehicle,
+    and `source` records which endpoint reported it.
+    """
+
+    symbol: str
+    source: str
+
+
+class TechnicalIndicatorPoint(FmpRecord):
+    """One indicator value for one bar.
+
+    `indicator`, `period_length` and `timeframe` are request parameters
+    the adapter controls, so they are typed fields; the value itself and
+    the OHLCV the provider echoes back stay in `raw`, because which key
+    holds the number differs per indicator (`rsi`, `adx`, `sma`, …).
+    """
+
+    symbol: str
+    indicator: str
+    period_length: int
+    timeframe: str
+
+
 class EarningsEvent(FmpRecord):
     """A scheduled or historical earnings date.
 

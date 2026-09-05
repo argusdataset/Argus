@@ -52,9 +52,11 @@ __all__ = [
     "INVALID_REQUEST",
     "NOT_FOUND",
     "SECURITY_NOT_FOUND",
+    "invalid_indicator",
     "WATCHLIST_LIMIT_REACHED",
     "WATCHLIST_NAME_TAKEN",
     "WATCHLIST_NOT_FOUND",
+    "UNKNOWN_INDICATOR",
     "TerminalError",
     "error_payload",
 ]
@@ -74,6 +76,12 @@ IDENTITY_REQUIRED = "IDENTITY_REQUIRED"
 #: the stub is off and Module 22 is not built. A 501, not a 401: the
 #: caller did nothing wrong, the server cannot answer yet.
 IDENTITY_UNAVAILABLE = "IDENTITY_UNAVAILABLE"
+#: A technical indicator FMP does not expose. A 400 rather than an empty
+#: series, because "no such indicator" and "this one has not been
+#: ingested yet" are different facts and an empty list would state the
+#: second when the first is true — the same conflation this module's
+#: docstring warns about for 404.
+UNKNOWN_INDICATOR = "UNKNOWN_INDICATOR"
 INVALID_REQUEST = "INVALID_REQUEST"
 NOT_FOUND = "NOT_FOUND"
 
@@ -94,4 +102,19 @@ def security_not_found(ticker: str) -> TerminalError:
         f"No security is trading as {ticker!r}.",
         status=404,
         detail={"ticker": ticker},
+    )
+
+
+def invalid_indicator(indicator: str, allowed: tuple[str, ...]) -> TerminalError:
+    """An indicator name nothing can ever satisfy.
+
+    `detail` carries the full allowed list rather than only the rejected
+    name: a client building a selector should be able to populate it from
+    one failed request instead of hard-coding a list that will drift.
+    """
+    return TerminalError(
+        UNKNOWN_INDICATOR,
+        f"{indicator!r} is not an indicator the provider computes.",
+        status=400,
+        detail={"indicator": indicator, "allowed": list(allowed)},
     )

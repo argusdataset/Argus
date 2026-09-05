@@ -71,6 +71,10 @@ STATEMENT_TYPES: tuple[CanonicalStatementType, ...] = (
 VALUATION_TYPES: tuple[CanonicalStatementType, ...] = (
     CanonicalStatementType.KEY_METRICS,
     CanonicalStatementType.RATIOS,
+    # Altman Z and Piotroski F. A third source rather than a subset of
+    # the other two: FMP computes them on a dedicated endpoint, and
+    # neither figure appears in key-metrics or ratios.
+    CanonicalStatementType.FINANCIAL_SCORES,
 )
 
 _MISS_EXPLANATIONS: dict[MissReason, str] = {

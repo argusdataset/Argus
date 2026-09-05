@@ -222,6 +222,67 @@ AUDIT: tuple[OrderedRead, ...] = (
         ),
     ),
     OrderedRead(
+        table="canonical_disclosures / canonical_snapshots",
+        ordering="observation_time",
+        parent="(security_id, disclosure_type, fiscal_period) / (security_id, snapshot_type)",
+        readers=(
+            "services.terminal.stored",
+            "services.terminal.analyst",
+            "services.terminal.governance",
+            "services.terminal.related",
+        ),
+        safe=True,
+        basis=(
+            "Both `observation_time` values come from the provider payload or the "
+            "fetch clock, never from a `now()` default, and both unique constraints "
+            "include the column ordered on — `uq_disclosure_observation` and "
+            "`uq_snapshot_observation`. Two revisions of one period, or two "
+            "observations of one snapshot, cannot share an instant, so the 'latest' "
+            "is never a coin flip. This is a current-value read rather than a "
+            "listing, which is why the constraint matters: `latest_disclosures` "
+            "picks one row per period and a tie would silently pick either."
+        ),
+    ),
+    OrderedRead(
+        table="technical_indicators",
+        ordering="event_time",
+        parent="(security_id, indicator, period_length, timeframe)",
+        readers=("services.terminal.stored", "services.terminal.indicators"),
+        safe=True,
+        basis=(
+            "`event_time` is the session close of the bar the value describes, and "
+            "`uq_technical_indicator_point` includes it alongside every parameter "
+            "that defines the series. One series cannot hold two points for one bar."
+        ),
+    ),
+    OrderedRead(
+        table="institutional_ownership",
+        ordering="year, quarter, observation_time",
+        parent="security_id",
+        readers=("services.terminal.related",),
+        safe=True,
+        basis=(
+            "`uq_institutional_ownership_security_period` makes (security, year, "
+            "quarter) unique, so the first two ordering keys already identify one "
+            "row and `observation_time` never has to break a tie. It is ordered on "
+            "anyway so the query says what 'latest' means rather than relying on the "
+            "constraint staying as it is."
+        ),
+    ),
+    OrderedRead(
+        table="analyst_grades",
+        ordering="event_time",
+        parent=None,
+        readers=("services.terminal.stored", "services.terminal.analyst"),
+        safe=True,
+        basis=(
+            "A listing, not a current-value read: every action is returned and no "
+            "decision is taken from the first row. Several firms legitimately act on "
+            "one day, so ties are expected rather than avoided — `id` breaks them so "
+            "the order is at least stable between two calls."
+        ),
+    ),
+    OrderedRead(
         table="history",
         ordering="valid_from",
         parent="security_id",

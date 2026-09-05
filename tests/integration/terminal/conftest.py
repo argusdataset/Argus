@@ -23,10 +23,21 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
 from data.canonical_model.exchanges import CanonicalExchange
-from data.canonical_model.records import CanonicalStatementType
+from data.canonical_model.records import (
+    CanonicalDisclosureType,
+    CanonicalSnapshotType,
+    CanonicalStatementType,
+)
 from data.normalization.identity import SecurityIdentityResolver
 from infra.db.schema.canonical import canonical_fundamentals
 from infra.db.schema.news import canonical_news
+from infra.db.schema.ownership_signals import institutional_ownership
+from infra.db.schema.terminal_data import (
+    analyst_grades,
+    canonical_disclosures,
+    canonical_snapshots,
+    technical_indicators,
+)
 from services.terminal.app import create_app
 from services.terminal.config import TerminalConfig
 from services.terminal.identity import USER_HEADER
@@ -256,3 +267,175 @@ def add_split(connection: Connection) -> Callable[..., None]:
 
 
 __all__ = ["HISTORY_START", "NOW", "Decimal", "timedelta"]
+
+
+# --------------------------------------------------------------------------
+# Ultimate-plan tables (Vazifa 4)
+#
+# Four fixtures rather than one generic writer, because the four tables
+# key differently and a single helper would have to take every column of
+# all four as an optional argument — at which point a test reads as a
+# column list rather than as a scenario.
+#
+# Every one takes `available_at` separately from the event time, for the
+# reason `add_fundamentals` does: "this happened in March and ARGUS could
+# not see it until May" is the only shape that proves a cutoff works.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def add_disclosure(connection: Connection) -> Callable[..., None]:
+    def _add(
+        security_id: UUID,
+        *,
+        disclosure_type: CanonicalDisclosureType,
+        fiscal_period: str,
+        available_at: datetime,
+        observed_at: datetime | None = None,
+        fiscal_period_end: datetime | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        observed = observed_at or available_at
+        connection.execute(
+            canonical_disclosures.insert().values(
+                security_id=security_id,
+                disclosure_type=disclosure_type.value,
+                fiscal_period=fiscal_period,
+                fiscal_period_end=fiscal_period_end,
+                event_time=observed,
+                observation_time=observed,
+                availability_time=available_at,
+                ingestion_time=available_at,
+                data=data or {},
+                lineage={"provider": "test"},
+            )
+        )
+
+    return _add
+
+
+@pytest.fixture
+def add_snapshot(connection: Connection) -> Callable[..., None]:
+    def _add(
+        security_id: UUID,
+        *,
+        snapshot_type: CanonicalSnapshotType,
+        available_at: datetime,
+        observed_at: datetime | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        observed = observed_at or available_at
+        connection.execute(
+            canonical_snapshots.insert().values(
+                security_id=security_id,
+                snapshot_type=snapshot_type.value,
+                event_time=observed,
+                observation_time=observed,
+                availability_time=available_at,
+                ingestion_time=available_at,
+                data=data or {},
+                lineage={"provider": "test"},
+            )
+        )
+
+    return _add
+
+
+@pytest.fixture
+def add_grade(connection: Connection) -> Callable[..., None]:
+    def _add(
+        security_id: UUID,
+        *,
+        grading_company: str,
+        graded_at: datetime,
+        available_at: datetime | None = None,
+        action: str | None = "upgrade",
+        previous_grade: str | None = "Hold",
+        new_grade: str | None = "Buy",
+    ) -> None:
+        available = available_at or graded_at
+        connection.execute(
+            analyst_grades.insert().values(
+                security_id=security_id,
+                event_time=graded_at,
+                observation_time=graded_at,
+                availability_time=available,
+                ingestion_time=available,
+                grading_company=grading_company,
+                action=action,
+                previous_grade=previous_grade,
+                new_grade=new_grade,
+                data={"gradingCompany": grading_company},
+                lineage={"provider": "test"},
+            )
+        )
+
+    return _add
+
+
+@pytest.fixture
+def add_indicator(connection: Connection) -> Callable[..., None]:
+    def _add(
+        security_id: UUID,
+        *,
+        indicator: str,
+        period_length: int,
+        bar_time: datetime,
+        value: Decimal | None,
+        timeframe: str = "1day",
+        available_at: datetime | None = None,
+    ) -> None:
+        available = available_at or bar_time
+        connection.execute(
+            technical_indicators.insert().values(
+                security_id=security_id,
+                indicator=indicator,
+                period_length=period_length,
+                timeframe=timeframe,
+                event_time=bar_time,
+                observation_time=bar_time,
+                availability_time=available,
+                ingestion_time=available,
+                value=value,
+                data={indicator: str(value) if value is not None else None},
+                lineage={"provider": "test"},
+            )
+        )
+
+    return _add
+
+
+@pytest.fixture
+def add_ownership_summary(connection: Connection) -> Callable[..., None]:
+    """One 13F summary, as Module 26 stores it.
+
+    `available_at` is separate from the quarter because that gap is the
+    whole point of 13F: filers have 45 days after a quarter closes, so a
+    query inside that window must not see the quarter it is inside.
+    """
+
+    def _add(
+        security_id: UUID,
+        *,
+        year: int,
+        quarter: int,
+        available_at: datetime,
+        observed_at: datetime | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        observed = observed_at or available_at
+        connection.execute(
+            institutional_ownership.insert().values(
+                security_id=security_id,
+                year=year,
+                quarter=quarter,
+                event_time=observed,
+                observation_time=observed,
+                availability_time=available_at,
+                ingestion_time=available_at,
+                data=data or {},
+                lineage={"provider": "test"},
+            )
+        )
+
+    return _add

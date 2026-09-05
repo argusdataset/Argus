@@ -52,18 +52,37 @@ from sqlalchemy.engine import Connection
 
 from infra.security.config import SecurityConfig
 from infra.security.middleware import harden
-from services.terminal import company, datafeed, freshness, news, watchlists
+from services.terminal import (
+    analyst,
+    company,
+    datafeed,
+    freshness,
+    governance,
+    indicators,
+    news,
+    related,
+    watchlists,
+)
 from services.terminal.config import TerminalConfig
 from services.terminal.errors import TerminalError
 from services.terminal.identity import USER_HEADER, current_user_id
 from services.terminal.schemas import (
+    AnalystEstimatesResponse,
+    AnalystGradesResponse,
     BarsResponse,
     DatafeedConfig,
+    ExecutiveCompensationResponse,
     FundamentalsResponse,
+    FundHoldingsResponse,
+    IndicatorResponse,
     NewsResponse,
+    OwnershipResponse,
+    PeersResponse,
+    PriceTargetResponse,
     ScanStatusResponse,
     SymbolInfo,
     SymbolSearchResult,
+    TranscriptsResponse,
     ValuationResponse,
     WatchlistDetail,
     WatchlistSummary,
@@ -179,6 +198,27 @@ AsOfDep = Annotated[
     ),
 ]
 LimitDep = Annotated[int | None, Query(ge=1, description="Maximum rows to return.")]
+PeriodLengthDep = Annotated[
+    int | None,
+    Query(
+        ge=1,
+        description=(
+            "Indicator period. Defaults to the one ARGUS ingests for this indicator "
+            "(50 for the moving averages, 14 for the oscillators). A period nobody "
+            "ingested returns an empty series with its reason, not an error."
+        ),
+    ),
+]
+TimeframeDep = Annotated[
+    str,
+    Query(
+        description=(
+            "Bar size the indicator was computed over. Only `1day` is ingested; "
+            "another value returns an empty series rather than daily values under "
+            "the wrong label."
+        )
+    ),
+]
 
 ConnectionDep = Annotated[Connection, Depends(get_connection)]
 ConfigDep = Annotated[TerminalConfig, Depends(get_config)]
@@ -218,6 +258,112 @@ def _company_router() -> APIRouter:
         limit: LimitDep = None,
     ) -> NewsResponse:
         return news.read_news(connection, ticker, as_of=as_of, limit=limit, config=config)
+
+    @router.get("/{ticker}/analyst-estimates", response_model=AnalystEstimatesResponse)
+    def analyst_estimates(
+        ticker: str,
+        connection: ConnectionDep,
+        config: ConfigDep,
+        as_of: AsOfDep = None,
+        limit: LimitDep = None,
+    ) -> AnalystEstimatesResponse:
+        return analyst.read_analyst_estimates(
+            connection, ticker, as_of=as_of, limit=limit, config=config
+        )
+
+    @router.get("/{ticker}/price-target", response_model=PriceTargetResponse)
+    def price_target(
+        ticker: str,
+        connection: ConnectionDep,
+        as_of: AsOfDep = None,
+    ) -> PriceTargetResponse:
+        return analyst.read_price_target(connection, ticker, as_of=as_of)
+
+    @router.get("/{ticker}/grades", response_model=AnalystGradesResponse)
+    def grades(
+        ticker: str,
+        connection: ConnectionDep,
+        config: ConfigDep,
+        as_of: AsOfDep = None,
+        limit: LimitDep = None,
+    ) -> AnalystGradesResponse:
+        return analyst.read_analyst_grades(
+            connection, ticker, as_of=as_of, limit=limit, config=config
+        )
+
+    @router.get("/{ticker}/executive-compensation", response_model=ExecutiveCompensationResponse)
+    def executive_compensation(
+        ticker: str,
+        connection: ConnectionDep,
+        config: ConfigDep,
+        as_of: AsOfDep = None,
+        limit: LimitDep = None,
+    ) -> ExecutiveCompensationResponse:
+        return governance.read_executive_compensation(
+            connection, ticker, as_of=as_of, limit=limit, config=config
+        )
+
+    @router.get("/{ticker}/transcripts", response_model=TranscriptsResponse)
+    def transcripts(
+        ticker: str,
+        connection: ConnectionDep,
+        config: ConfigDep,
+        as_of: AsOfDep = None,
+        limit: LimitDep = None,
+    ) -> TranscriptsResponse:
+        return governance.read_transcripts(
+            connection, ticker, as_of=as_of, limit=limit, config=config
+        )
+
+    @router.get("/{ticker}/peers", response_model=PeersResponse)
+    def peers(
+        ticker: str,
+        connection: ConnectionDep,
+        as_of: AsOfDep = None,
+    ) -> PeersResponse:
+        return related.read_peers(connection, ticker, as_of=as_of)
+
+    @router.get("/{ticker}/ownership", response_model=OwnershipResponse)
+    def ownership(
+        ticker: str,
+        connection: ConnectionDep,
+        as_of: AsOfDep = None,
+    ) -> OwnershipResponse:
+        return related.read_institutional_ownership(connection, ticker, as_of=as_of)
+
+    @router.get("/{ticker}/holdings", response_model=FundHoldingsResponse)
+    def holdings(
+        ticker: str,
+        connection: ConnectionDep,
+        as_of: AsOfDep = None,
+    ) -> FundHoldingsResponse:
+        return related.read_fund_holdings(connection, ticker, as_of=as_of)
+
+    # The indicator is a path segment rather than a query parameter: it
+    # names *which series* is being asked for, so two indicators are two
+    # resources. `period_length` and `timeframe` are query parameters
+    # because they select a variant of the same one.
+    @router.get("/{ticker}/indicators/{indicator}", response_model=IndicatorResponse)
+    def indicator_series(
+        ticker: str,
+        indicator: str,
+        connection: ConnectionDep,
+        config: ConfigDep,
+        period_length: PeriodLengthDep = None,
+        timeframe: TimeframeDep = indicators.DEFAULT_TIMEFRAME,
+        as_of: AsOfDep = None,
+        limit: LimitDep = None,
+    ) -> IndicatorResponse:
+        return indicators.read_indicator(
+            connection,
+            ticker,
+            indicator,
+            period_length=period_length,
+            timeframe=timeframe,
+            as_of=as_of,
+            limit=limit,
+            config=config,
+        )
 
     return router
 

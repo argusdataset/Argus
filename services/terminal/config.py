@@ -113,6 +113,68 @@ class TerminalLimits:
         )
     )
 
+    # -- Ultimate-plan panels ----------------------------------------------
+    #
+    # Three pairs rather than one shared pair, because the three things
+    # being bounded are different sizes: a compensation history is a
+    # handful of years, a grades feed is a stream, and an indicator series
+    # is a chart overlay. One number for all three would be too small for
+    # the chart or too large for the panels.
+    default_disclosure_limit: TerminalLimit = field(
+        default_factory=lambda: _l(
+            8.0,
+            OPERATIONAL,
+            "Fiscal periods returned per disclosure panel — estimates, "
+            "compensation, transcripts. Eight covers the forward estimate "
+            "range FMP publishes and about two years of quarters.",
+        )
+    )
+    max_disclosure_limit: TerminalLimit = field(
+        default_factory=lambda: _l(
+            60.0,
+            OPERATIONAL,
+            "Ceiling on a disclosure panel. Generous enough for a full "
+            "compensation history, bounded so one request cannot pull "
+            "every transcript a company ever gave.",
+        )
+    )
+    default_grades_limit: TerminalLimit = field(
+        default_factory=lambda: _l(
+            25.0,
+            OPERATIONAL,
+            "Rating actions returned when a caller does not ask for a "
+            "count. An event stream, so it is sized like the news feed "
+            "rather than like the period panels.",
+        )
+    )
+    max_grades_limit: TerminalLimit = field(
+        default_factory=lambda: _l(
+            200.0,
+            OPERATIONAL,
+            "Ceiling on the grades feed. Higher than news because several "
+            "firms can act on one day and a quarter of coverage is a "
+            "reasonable thing to ask for.",
+        )
+    )
+    default_indicator_points: TerminalLimit = field(
+        default_factory=lambda: _l(
+            300.0,
+            OPERATIONAL,
+            "Indicator values returned per series. Matches "
+            "`default_countback` on purpose: an overlay that is shorter "
+            "than the chart it sits on draws a line that stops halfway.",
+        )
+    )
+    max_indicator_points: TerminalLimit = field(
+        default_factory=lambda: _l(
+            5000.0,
+            OPERATIONAL,
+            "Ceiling on one indicator series, matching "
+            "`max_bars_per_request` for the same reason the default "
+            "matches the countback.",
+        )
+    )
+
     # -- Symbol search ------------------------------------------------------
     max_search_results: TerminalLimit = field(
         default_factory=lambda: _l(
@@ -190,6 +252,21 @@ class TerminalLimits:
         if requested is None:
             return int(self.default_news_limit)
         return max(1, min(requested, int(self.max_news_limit)))
+
+    def bounded_disclosure_limit(self, requested: int | None) -> int:
+        if requested is None:
+            return int(self.default_disclosure_limit)
+        return max(1, min(requested, int(self.max_disclosure_limit)))
+
+    def bounded_grades_limit(self, requested: int | None) -> int:
+        if requested is None:
+            return int(self.default_grades_limit)
+        return max(1, min(requested, int(self.max_grades_limit)))
+
+    def bounded_indicator_points(self, requested: int | None) -> int:
+        if requested is None:
+            return int(self.default_indicator_points)
+        return max(1, min(requested, int(self.max_indicator_points)))
 
     def bounded_search_limit(self, requested: int | None) -> int:
         ceiling = int(self.max_search_results)

@@ -86,6 +86,19 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     # counts is immutable — which is also why the count is "failures
     # since the last success" rather than a counter reset on success.
     "login_attempts",
+    # Added with the tables in migration 0018 (Module 19's Ultimate-plan
+    # data). Same reasoning as canonical_news: a revised estimate, a
+    # moved consensus or a re-stated compensation figure is a new row
+    # with a later observation_time, and the earlier row stays because it
+    # is what ARGUS could have known at the earlier instant. Overwriting
+    # it would rewrite that history — and would also break the
+    # restatement query in services/terminal/stored.py, which picks the
+    # latest observation *among available rows* and needs the earlier one
+    # to still be there.
+    "canonical_disclosures",
+    "canonical_snapshots",
+    "analyst_grades",
+    "technical_indicators",
     # Added with the table in migration 0013 (Module 24). The same
     # reasoning as login_attempts, applied to registration: a per-source
     # signup limit clearable by deleting its own evidence is not a limit.

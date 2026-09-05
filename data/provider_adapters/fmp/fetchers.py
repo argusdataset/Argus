@@ -38,19 +38,27 @@ from data.provider_adapters.fmp.checkpoint import JobCheckpoint
 from data.provider_adapters.fmp.client import FmpClient
 from data.provider_adapters.fmp.errors import FmpError
 from data.provider_adapters.fmp.models import (
+    AnalystEstimate,
+    AnalystGrade,
     CorporateAction,
     CorporateActionKind,
     DailyBar,
     DelistedSecurity,
     EarningsEvent,
+    EarningsTranscript,
     EmptyReason,
+    ExecutiveCompensation,
     FetchProvenance,
     FinancialStatement,
+    FundHolding,
     InsiderTransaction,
     InstitutionalOwnershipSummary,
     NewsArticle,
+    PriceTarget,
     SecFiling,
     SecurityListing,
+    SecurityPeerGroup,
+    TechnicalIndicatorPoint,
 )
 from packages.config import AppConfig, get_config
 
@@ -63,6 +71,12 @@ STATEMENT_ENDPOINTS = {
     "CASH_FLOW": endpoints.CASH_FLOW_STATEMENT,
     "KEY_METRICS": endpoints.KEY_METRICS,
     "RATIOS": endpoints.FINANCIAL_RATIOS,
+    # Joins the statement path rather than getting a fetcher of its own:
+    # `IngestionConfig.statement_types` is derived from this table, so a
+    # type added here is picked up by the tiered deep refresh, stored by
+    # `translate_fundamental`, and read by `get_latest_fundamental_as_of`
+    # with no further wiring anywhere.
+    "FINANCIAL_SCORES": endpoints.FINANCIAL_SCORES,
 }
 
 
@@ -479,6 +493,154 @@ class FmpFetcher:
             params={"symbol": symbol, "type": form_type, "page": page, "limit": limit},
         )
         records = [self._sec_filing(row, symbol, form_type, provenance) for row in _rows(body)]
+        return self._result(records, provenance)
+
+    # -- Ultimate-plan: analyst, governance and holdings --------------------
+    #
+    # Eight data types Module 19's Terminal serves. Each returns whole
+    # provider rows in `raw`: the field names are documented but not
+    # verified against a live key, so nothing is extracted here — see
+    # `data/normalization/terminal_records.py`'s FIELD_ALIASES.
+
+    async def fetch_analyst_estimates(
+        self, symbol: str, *, period: str = "annual", limit: int = 30
+    ) -> FetchResult[AnalystEstimate]:
+        """Consensus revenue/EPS forecasts, newest period first."""
+        body, provenance = await self._client.get(
+            endpoints.ANALYST_ESTIMATES,
+            params={"symbol": symbol, "period": period, "limit": limit},
+        )
+        records = [
+            AnalystEstimate(provenance=provenance, symbol=symbol, raw=dict(row))
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_price_target_consensus(self, symbol: str) -> FetchResult[PriceTarget]:
+        """High/low/median/consensus target figures."""
+        return await self._price_target(symbol, endpoints.PRICE_TARGET_CONSENSUS, "consensus")
+
+    async def fetch_price_target_summary(self, symbol: str) -> FetchResult[PriceTarget]:
+        """How many analysts published a target, over several windows."""
+        return await self._price_target(symbol, endpoints.PRICE_TARGET_SUMMARY, "summary")
+
+    async def _price_target(
+        self, symbol: str, endpoint: endpoints.Endpoint, source: str
+    ) -> FetchResult[PriceTarget]:
+        body, provenance = await self._client.get(endpoint, params={"symbol": symbol})
+        records = [
+            PriceTarget(provenance=provenance, symbol=symbol, source=source, raw=dict(row))
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_analyst_grades(
+        self, symbol: str, *, limit: int = 100
+    ) -> FetchResult[AnalystGrade]:
+        """Rating changes, newest first. One record per firm per action."""
+        body, provenance = await self._client.get(
+            endpoints.ANALYST_GRADES, params={"symbol": symbol, "limit": limit}
+        )
+        records = [
+            AnalystGrade(provenance=provenance, symbol=symbol, raw=dict(row)) for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_executive_compensation(self, symbol: str) -> FetchResult[ExecutiveCompensation]:
+        """Proxy-statement compensation, one record per executive per year."""
+        body, provenance = await self._client.get(
+            endpoints.EXECUTIVE_COMPENSATION, params={"symbol": symbol}
+        )
+        records = [
+            ExecutiveCompensation(provenance=provenance, symbol=symbol, raw=dict(row))
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_stock_peers(self, symbol: str) -> FetchResult[SecurityPeerGroup]:
+        """The provider's peer list for one symbol."""
+        body, provenance = await self._client.get(endpoints.STOCK_PEERS, params={"symbol": symbol})
+        records = [
+            SecurityPeerGroup(provenance=provenance, symbol=symbol, raw=dict(row))
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_earnings_transcript(
+        self, symbol: str, *, year: int | None = None, quarter: int | None = None
+    ) -> FetchResult[EarningsTranscript]:
+        """One call's transcript, or the most recent when no period is named."""
+        params: dict[str, Any] = {"symbol": symbol}
+        if year is not None:
+            params["year"] = year
+        if quarter is not None:
+            params["quarter"] = quarter
+
+        body, provenance = await self._client.get(endpoints.EARNINGS_TRANSCRIPT, params=params)
+        records = [
+            EarningsTranscript(
+                provenance=provenance, symbol=symbol, year=year, quarter=quarter, raw=dict(row)
+            )
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_etf_holdings(self, symbol: str) -> FetchResult[FundHolding]:
+        """What an ETF holds, one record per position."""
+        return await self._fund_positions(symbol, endpoints.ETF_HOLDINGS, "etf")
+
+    async def fetch_fund_disclosure(self, symbol: str) -> FetchResult[FundHolding]:
+        """What a mutual fund disclosed holding, one record per position."""
+        return await self._fund_positions(symbol, endpoints.FUND_DISCLOSURE, "mutual_fund")
+
+    async def _fund_positions(
+        self, symbol: str, endpoint: endpoints.Endpoint, source: str
+    ) -> FetchResult[FundHolding]:
+        body, provenance = await self._client.get(endpoint, params={"symbol": symbol})
+        records = [
+            FundHolding(provenance=provenance, symbol=symbol, source=source, raw=dict(row))
+            for row in _rows(body)
+        ]
+        return self._result(records, provenance)
+
+    async def fetch_technical_indicator(
+        self,
+        symbol: str,
+        indicator: str,
+        *,
+        period_length: int = 14,
+        timeframe: str = "1day",
+    ) -> FetchResult[TechnicalIndicatorPoint]:
+        """One indicator's series for one symbol.
+
+        `indicator` selects the path segment — see
+        `endpoints.TECHNICAL_INDICATORS` for the nine FMP exposes. An
+        unknown name is refused here rather than sent, because the
+        provider would answer a 404 that looks like "no data" and a
+        silently empty series is worse than an error.
+        """
+        if indicator not in endpoints.TECHNICAL_INDICATORS:
+            raise ValueError(
+                f"Unknown technical indicator {indicator!r}; "
+                f"expected one of {sorted(endpoints.TECHNICAL_INDICATORS)}"
+            )
+
+        body, provenance = await self._client.get(
+            endpoints.TECHNICAL_INDICATOR,
+            params={"symbol": symbol, "periodLength": period_length, "timeframe": timeframe},
+            path_params={"indicator": indicator},
+        )
+        records = [
+            TechnicalIndicatorPoint(
+                provenance=provenance,
+                symbol=symbol,
+                indicator=indicator,
+                period_length=period_length,
+                timeframe=timeframe,
+                raw=dict(row),
+            )
+            for row in _rows(body)
+        ]
         return self._result(records, provenance)
 
     # -- Record construction ------------------------------------------------

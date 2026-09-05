@@ -13,12 +13,74 @@ and their own watchlists.
 | `identity.py` | Who is asking — a deliberately temporary stub, shaped for Module 22 to replace |
 | `config.py` | Page bounds and the two real product limits, kind-tagged |
 | `company.py` | Fundamentals and valuation, through Module 07's PIT layer |
+| `stored.py` | The three PIT queries the four modules below share, and the restatement rule |
+| `analyst.py` | Estimates, price targets, rating actions |
+| `governance.py` | Executive compensation, earnings-call transcripts |
+| `related.py` | Peer group, fund holdings, institutional ownership |
+| `indicators.py` | Provider-computed technical indicator series |
 | `news.py` | Articles, through the `canonical_news` table migration 0010 adds |
 | `bars.py` | PIT-correct, split-adjusted OHLCV, composed from Modules 07 and 08 |
 | `datafeed.py` | The TradingView Advanced Charts datafeed protocol |
 | `watchlists.py` | User watchlist CRUD |
 | `freshness.py` | The one endpoint that touches scan output, via Module 18's `results.py` |
 | `app.py` | Routing and translation. No logic |
+
+## The Ultimate-plan data, and what is honestly missing
+
+Nine endpoints beyond fundamentals and news, all of them read-only
+passthroughs of what FMP reported:
+
+| Endpoint | Source | Shape |
+|---|---|---|
+| `/{ticker}/analyst-estimates` | `/stable/analyst-estimates` | Periods, newest revision of each |
+| `/{ticker}/price-target` | consensus + summary | Two halves, never merged |
+| `/{ticker}/grades` | `/stable/grades` | Event stream, every action |
+| `/{ticker}/executive-compensation` | governance | One row per officer per year |
+| `/{ticker}/transcripts` | earnings calls | Text, never summarised |
+| `/{ticker}/peers` | `/stable/stock-peers` | The provider's list |
+| `/{ticker}/ownership` | 13F summaries (Module 26) | The provider's percentage |
+| `/{ticker}/holdings` | ETF / fund disclosure | One snapshot per disclosure |
+| `/{ticker}/indicators/{indicator}` | nine indicators | One series per parameter set |
+
+`/valuation` also gained a third source — `/stable/financial-scores`,
+carrying Altman Z and Piotroski F. Neither figure appears in key-metrics
+or ratios, so it is a real dependency rather than a bonus, and a security
+without it has `FINANCIAL_SCORES` named in `unavailable`.
+
+### Three things ARGUS does not have, said plainly
+
+**Short interest does not exist here.** FMP exposes no such endpoint on
+any plan. There is no field for it anywhere in `schemas.py` — an
+always-null one would look like a gap ARGUS could close, and leaving it
+out says the truth instead.
+
+**Insider ownership percentage does not exist here either.** FMP reports
+insider *transactions*, not a held percentage. Deriving one from the
+transaction history would be ARGUS computing, which these endpoints exist
+not to do.
+
+**A fund and an operating company are indistinguishable.** ARGUS stores
+no security-type flag, so `/holdings` reports `NEVER_INGESTED` for both a
+company that holds nothing and a fund nobody ingested, and the ingestion
+fetches holdings only for symbols the caller names as funds. See
+`core/ingestion/terminal_data.py`.
+
+**Institutional ownership percentage does exist**, and it comes from
+FMP's own 13F summary rather than from arithmetic: Module 26 ingests the
+summaries, `related.py` reads the newest one knowable at the cutoff, and
+the percentage shown is the one the provider reported, resolved through
+Module 26's own `FIELD_ALIASES`.
+
+## Nothing is computed, and the reason is provenance
+
+A P/E derived in `company.py`, an SMA derived in `indicators.py` and an
+ownership percentage derived in `related.py` would all be numbers with no
+`availability_time` of their own, no lineage, and nothing else in ARGUS
+able to reproduce them. There is a second reason for the indicators
+specifically: `core/market_state/` and `core/scoring/` compute their own
+series from canonical bars, and a second implementation of "the 50-day
+average" in one codebase has no answer to which one is right the first
+time they disagree.
 
 ## Three things to know before reading the code
 

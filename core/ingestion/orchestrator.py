@@ -80,6 +80,7 @@ from core.ingestion.phases import current_phases
 from core.ingestion.prices import OhlcvReport, PriceSource, ingest_daily_prices
 from core.ingestion.refresh_log import last_refreshes
 from core.ingestion.strategy import StrategyDecision, select_strategy
+from core.ingestion.terminal_data import TerminalDataReport, ingest_terminal_data
 from core.live_scanner.readiness import ReadinessReport, check_readiness
 from core.live_scanner.schedule import as_of_for, scan_date_for
 from infra.observability.logging import get_logger
@@ -113,6 +114,10 @@ class IngestionReport:
     #: Modules 28 and 29 read. `None` when the provider cannot serve those
     #: endpoints; see `core/ingestion/ownership.py`.
     ownership: OwnershipIngestReport | None = None
+    #: Analyst, governance and holdings data — what Module 19's Terminal
+    #: serves. `None` when the provider cannot serve those endpoints; see
+    #: `core/ingestion/terminal_data.py`.
+    terminal_data: TerminalDataReport | None = None
     readiness: ReadinessReport | None = None
     skipped_reason: str | None = None
 
@@ -134,6 +139,7 @@ class IngestionReport:
             "prices": self.prices.as_dict() if self.prices else None,
             "deep_refresh": self.deep_refresh.as_dict() if self.deep_refresh else None,
             "ownership": self.ownership.as_dict() if self.ownership else None,
+            "terminal_data": self.terminal_data.as_dict() if self.terminal_data else None,
             "readiness": self.readiness.as_dict() if self.readiness else None,
             "skipped_reason": self.skipped_reason,
             "healthy": self.healthy,
@@ -227,12 +233,22 @@ async def run_daily_ingestion(
         max_concurrency=settings.providers.fmp_max_concurrency,
     )
 
+    terminal_data = await _ingest_terminal_data(
+        engine,
+        source,
+        members=members,
+        trading_date=trading_date,
+        config=resolved,
+        max_concurrency=settings.providers.fmp_max_concurrency,
+    )
+
     report = IngestionReport(
         trading_date=trading_date,
         strategy=decision,
         prices=prices,
         deep_refresh=deep,
         ownership=ownership,
+        terminal_data=terminal_data,
         readiness=readiness,
     )
     _log.info(
@@ -240,6 +256,60 @@ async def run_daily_ingestion(
         extra={"event": "ingestion_finished", **report.as_dict()},
     )
     return report
+
+
+async def _ingest_terminal_data(
+    engine: Engine,
+    source: Any,
+    *,
+    members: Any,
+    trading_date: date,
+    config: IngestionConfig,
+    max_concurrency: int,
+) -> TerminalDataReport:
+    """Module 19's Ultimate-plan data, for the securities that are due.
+
+    Last in the run and paced by the same tier decision as the deep
+    refresh, so analyst coverage tracks the same cadence fundamentals do.
+    Nothing downstream waits on it: `core/live_scanner/readiness.py`
+    checks OHLCV coverage and nothing else.
+    """
+    due = _due_for_refresh(engine, members, trading_date=trading_date, config=config)
+    return await ingest_terminal_data(
+        engine,
+        source,
+        due=due,
+        trading_date=trading_date,
+        config=config,
+        max_concurrency=max_concurrency,
+    )
+
+
+def _due_for_refresh(
+    engine: Engine,
+    members: Any,
+    *,
+    trading_date: date,
+    config: IngestionConfig,
+) -> list[Any]:
+    """Which securities Module 26's tier decision makes due today.
+
+    Shared by the ownership and Terminal-data steps so the two cannot
+    drift apart, and read from the same `market_state` projection and the
+    same refresh log the fundamentals refresh reads.
+    """
+    identities = [member.security_id for member in members.members]
+    with engine.begin() as connection:
+        phases = current_phases(connection, identities, config.settings)
+        previous = last_refreshes(connection, identities)
+
+    return due_members(
+        members,
+        phases=phases,
+        previous=previous,
+        trading_date=trading_date,
+        config=config,
+    )
 
 
 async def _ingest_ownership_data(
@@ -267,18 +337,7 @@ async def _ingest_ownership_data(
 
     await ingest_filings(engine, source, members=members, trading_date=trading_date, report=outcome)
 
-    identities = [member.security_id for member in members.members]
-    with engine.begin() as connection:
-        phases = current_phases(connection, identities, config.settings)
-        previous = last_refreshes(connection, identities)
-
-    due = due_members(
-        members,
-        phases=phases,
-        previous=previous,
-        trading_date=trading_date,
-        config=config,
-    )
+    due = _due_for_refresh(engine, members, trading_date=trading_date, config=config)
     return await ingest_ownership(
         engine,
         source,

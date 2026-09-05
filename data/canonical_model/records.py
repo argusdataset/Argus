@@ -60,6 +60,22 @@ class CanonicalStatementType(StrEnum):
 
     Module 03 left `statement_type` as free text precisely so this module
     could define the taxonomy. These are the values it may hold.
+
+    **The line is what a value describes, not who arithmetic-ed it.**
+    Everything here is *this issuer's own figures for a closed fiscal
+    period*: the three statements as filed, and the metrics, ratios and
+    scores a provider derives from them. `KEY_METRICS` and `RATIOS` were
+    always provider-computed, and `FINANCIAL_SCORES` joins them on the
+    same footing — an Altman Z-Score is arithmetic over a balance sheet,
+    reproducible from figures the company filed.
+
+    What does *not* belong here is a claim about the future or about the
+    company from someone else: an analyst's forecast, a rating, a price
+    target. Those are a different kind of evidence, they carry no fiscal
+    period in the same sense, and every reader of `canonical_fundamentals`
+    — `bankruptcy.py`'s distress signals among them — is entitled to
+    assume a row here is grounded in a filing. See
+    `CanonicalDisclosureType` for where the rest goes.
     """
 
     INCOME_STATEMENT = "INCOME_STATEMENT"
@@ -67,6 +83,61 @@ class CanonicalStatementType(StrEnum):
     CASH_FLOW = "CASH_FLOW"
     KEY_METRICS = "KEY_METRICS"
     RATIOS = "RATIOS"
+    #: Altman Z-Score, Piotroski F-Score and the provider's own
+    #: solvency/strength figures. A dedicated FMP endpoint rather than a
+    #: subset of the two above, which is why it needs its own member.
+    FINANCIAL_SCORES = "FINANCIAL_SCORES"
+
+
+class CanonicalDisclosureType(StrEnum):
+    """Period-keyed records that are not financial statements.
+
+    Each of these has a fiscal period and a payload, exactly like a
+    statement — and each is a different *kind of claim* from one, which
+    is why they live in `canonical_disclosures` rather than beside the
+    filings:
+
+    - `ANALYST_ESTIMATES` is what analysts predict, not what happened.
+    - `EXECUTIVE_COMPENSATION` is a governance disclosure from the proxy
+      statement, not a line on any of the three statements.
+    - `EARNINGS_TRANSCRIPT` is what was said on a call — prose, not
+      figures, and never parsed into any by ARGUS.
+
+    Restatement works the same way it does for fundamentals: a revision
+    is a new row with a later `observation_time`, and a point-in-time
+    query picks the latest one that was available at the instant asked
+    about. Estimates in particular are revised constantly, which is
+    precisely why they need that machinery rather than an overwrite.
+    """
+
+    ANALYST_ESTIMATES = "ANALYST_ESTIMATES"
+    EXECUTIVE_COMPENSATION = "EXECUTIVE_COMPENSATION"
+    EARNINGS_TRANSCRIPT = "EARNINGS_TRANSCRIPT"
+
+
+class CanonicalSnapshotType(StrEnum):
+    """Records describing a security *now*, with no fiscal period at all.
+
+    A price target consensus, a peer group and a fund's holdings are all
+    rolling states rather than periods: asking "which quarter is this
+    from" has no answer. They are stored as a series of observations —
+    one row per fetch that saw something new — so "what did the consensus
+    say last March" stays answerable, which a single overwritten current
+    row could not do.
+    """
+
+    #: The two halves of the price-target picture, kept as separate types
+    #: rather than one. Not a taxonomy preference — the snapshot key is
+    #: (security, type, observation_time), so filing both under one type
+    #: makes two fetches that resolve to the same observation instant
+    #: collide, and `ON CONFLICT DO NOTHING` would silently drop whichever
+    #: arrived second. Which half survived would then depend on request
+    #: ordering, which is exactly the kind of quiet wrongness the
+    #: append-only design exists to prevent.
+    PRICE_TARGET_CONSENSUS = "PRICE_TARGET_CONSENSUS"
+    PRICE_TARGET_SUMMARY = "PRICE_TARGET_SUMMARY"
+    PEERS = "PEERS"
+    FUND_HOLDINGS = "FUND_HOLDINGS"
 
 
 class SourceLineage(BaseModel):

@@ -86,6 +86,12 @@ CASH_FLOW_STATEMENT = Endpoint("cash_flow_statement", "/stable/cash-flow-stateme
 KEY_METRICS = Endpoint("key_metrics", "/stable/key-metrics")
 FINANCIAL_RATIOS = Endpoint("financial_ratios", "/stable/ratios")
 
+#: Altman Z-Score and Piotroski F-Score. A dedicated endpoint: neither
+#: figure appears in key-metrics or ratios, and both are arithmetic over
+#: figures the company filed, so this is a statement type rather than an
+#: analyst opinion. See `CanonicalStatementType.FINANCIAL_SCORES`.
+FINANCIAL_SCORES = Endpoint("financial_scores", "/stable/financial-scores")
+
 # --- Corporate actions -----------------------------------------------------
 
 SPLITS = Endpoint("splits", "/stable/splits")
@@ -131,6 +137,72 @@ SEC_FILINGS_SEARCH_BY_SYMBOL = Endpoint(
     "sec_filings_search_by_symbol", "/stable/search-by-symbol", immutable=False
 )
 
+# --- Ultimate-plan: analyst, governance and holdings ----------------------
+#
+# The eight data types Module 19's Terminal serves and nothing else reads.
+# `immutable` is set per endpoint by asking one question: can a response
+# for the same arguments legitimately differ tomorrow?
+
+#: Consensus revenue/EPS forecasts per fiscal period. Revised constantly,
+#: which is the whole reason they are stored with restatement semantics.
+ANALYST_ESTIMATES = Endpoint("analyst_estimates", "/stable/analyst-estimates", immutable=False)
+
+#: The two halves of the price-target picture. Consensus carries the
+#: high/low/median figures; summary carries the counts behind them.
+PRICE_TARGET_CONSENSUS = Endpoint(
+    "price_target_consensus", "/stable/price-target-consensus", immutable=False
+)
+PRICE_TARGET_SUMMARY = Endpoint(
+    "price_target_summary", "/stable/price-target-summary", immutable=False
+)
+
+#: Rating changes. A new action appears whenever a firm moves.
+ANALYST_GRADES = Endpoint("analyst_grades", "/stable/grades", immutable=False)
+
+#: Proxy-statement compensation, by fiscal year. A filed historical fact
+#: once the year is disclosed — immutable, like a financial statement.
+EXECUTIVE_COMPENSATION = Endpoint(
+    "executive_compensation", "/stable/governance-executive-compensation"
+)
+
+#: The provider's peer group. Changes as classifications are revised.
+STOCK_PEERS = Endpoint("stock_peers", "/stable/stock-peers", immutable=False)
+
+#: What was said on an earnings call. The text of a past call does not
+#: change, so this is the one new endpoint that is genuinely immutable.
+EARNINGS_TRANSCRIPT = Endpoint("earnings_transcript", "/stable/earning-call-transcript")
+
+#: Fund composition. Both change with every rebalance.
+ETF_HOLDINGS = Endpoint("etf_holdings", "/stable/etf/holdings", immutable=False)
+FUND_DISCLOSURE = Endpoint("fund_disclosure", "/stable/funds/disclosure", immutable=False)
+
+# --- Technical indicators --------------------------------------------------
+
+#: One endpoint, nine indicators, selected by path. `Endpoint.render`
+#: fills the placeholder and `FmpClient.get` takes `path_params`, so this
+#: needs one entry rather than nine.
+#:
+#: `immutable=True` because each point is computed over a *closed* bar:
+#: yesterday's RSI does not change tomorrow. The series grows at the
+#: front, which a re-fetch picks up, but the points already in it are
+#: settled — the same reasoning that makes a daily bar immutable.
+TECHNICAL_INDICATOR = Endpoint("technical_indicator", "/stable/technical-indicators/{indicator}")
+
+#: The nine indicators FMP exposes, as the path segment each one uses.
+#: Held here rather than in the fetcher so the registry stays the one
+#: place an endpoint is described.
+TECHNICAL_INDICATORS: tuple[str, ...] = (
+    "sma",
+    "ema",
+    "wma",
+    "dema",
+    "tema",
+    "rsi",
+    "standarddeviation",
+    "williams",
+    "adx",
+)
+
 #: Every endpoint above, by name — used by tests to assert the registry
 #: and the fetchers stay in step.
 ALL_ENDPOINTS: tuple[Endpoint, ...] = (
@@ -145,6 +217,7 @@ ALL_ENDPOINTS: tuple[Endpoint, ...] = (
     CASH_FLOW_STATEMENT,
     KEY_METRICS,
     FINANCIAL_RATIOS,
+    FINANCIAL_SCORES,
     SPLITS,
     DIVIDENDS,
     MERGERS_ACQUISITIONS,
@@ -154,4 +227,14 @@ ALL_ENDPOINTS: tuple[Endpoint, ...] = (
     INSIDER_TRADING_SEARCH,
     SEC_8K_LATEST,
     SEC_FILINGS_SEARCH_BY_SYMBOL,
+    ANALYST_ESTIMATES,
+    PRICE_TARGET_CONSENSUS,
+    PRICE_TARGET_SUMMARY,
+    ANALYST_GRADES,
+    EXECUTIVE_COMPENSATION,
+    STOCK_PEERS,
+    EARNINGS_TRANSCRIPT,
+    ETF_HOLDINGS,
+    FUND_DISCLOSURE,
+    TECHNICAL_INDICATOR,
 )

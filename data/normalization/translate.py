@@ -64,6 +64,7 @@ _STATEMENT_TYPES: dict[str, CanonicalStatementType] = {
     "CASH_FLOW": CanonicalStatementType.CASH_FLOW,
     "KEY_METRICS": CanonicalStatementType.KEY_METRICS,
     "RATIOS": CanonicalStatementType.RATIOS,
+    "FINANCIAL_SCORES": CanonicalStatementType.FINANCIAL_SCORES,
 }
 
 _ACTION_TYPES: dict[CorporateActionKind, CanonicalCorporateActionType] = {
