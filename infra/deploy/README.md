@@ -282,6 +282,42 @@ the most conservative paid tier: a process that silently runs ten times
 too fast against a plan that forbids it is a worse failure than one that
 runs slowly.
 
+### When the migration step refuses
+
+`assert_backwards_compatible` stops a deploy whose migration would break
+containers still running the previous code — they keep serving throughout
+a rolling deploy, so a dropped constraint or a tightened column breaks
+*them*, not the new image. The refusal names the revisions and says what
+to do.
+
+**It costs the whole deploy, not just the migration.** The web services
+still start, but their `/health/live` probe runs `check_health`, which
+reports `down` when the schema is not the revision the code expects — so
+every web service fails its health check against a database left one
+revision behind. That is the correct behaviour and it looks alarming: six
+services failing health checks, one refused migration underneath.
+
+Two ways forward, and the first is the default:
+
+1. **Split it across two deploys.** Ship the code that no longer uses the
+   old shape, then the migration. This is right whenever old code might
+   still write the affected tables.
+2. **`ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1` for one deploy**, when the code
+   that depended on the old shape is already gone. Per-deploy and
+   explicit on purpose.
+
+`infra/deploy/migrate.py`'s `ACKNOWLEDGED_DESTRUCTIVE` lists every
+migration in the repository that will trigger this and what each needs.
+A destructive migration that is *not* listed fails
+`tests/unit/deploy/test_migration_safety.py` at commit time — which is
+where this should be found, rather than in a deploy log.
+
+**Migration 0020 needs option 2.** It rebuilds three unique constraints,
+which cannot be done without dropping them, and adds a NOT NULL column.
+The only writer of the three affected tables is the ingestion cron, which
+is replaced wholesale by the same deploy rather than rolling — so once
+that image is built, no old code writes them.
+
 ### What running migrations first does *not* buy
 
 New code never sees an old schema. Old code **does** see the new one —

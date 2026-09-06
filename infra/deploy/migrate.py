@@ -72,6 +72,7 @@ from infra.deploy.cli import refuse_arguments
 from infra.observability.logging import configure_logging, get_logger
 
 __all__ = [
+    "ACKNOWLEDGED_DESTRUCTIVE",
     "ALEMBIC_INI",
     "DESTRUCTIVE_OPERATIONS",
     "BackwardsIncompatibleMigration",
@@ -112,6 +113,62 @@ DESTRUCTIVE_OPERATIONS: tuple[str, ...] = (
 #: working — slower at worst. Treating it as destructive would make the
 #: check cry wolf on the one maintenance operation that is genuinely safe
 #: mid-deploy.
+
+#: Migrations whose `upgrade()` is knowingly backwards-incompatible, and
+#: what the operator has to do about each. A revision listed here is
+#: **still refused** by `assert_backwards_compatible` — this is not an
+#: allow-list. It exists so that the refusal is *expected* rather than
+#: discovered from a failed deploy, and so a reader can find out why
+#: without reconstructing the reasoning.
+#:
+#: `tests/unit/deploy/test_migration_safety.py` runs the real rule over
+#: the repository's own migrations and fails when a destructive one is
+#: not listed. Before that test existed, the check only ever ran against
+#: synthetic migrations written by its own test — so it was correct,
+#: well tested, and had never been pointed at the artefacts it protects.
+#: Migration 0020 reached production and failed the deploy there, which
+#: is the expensive way to learn it.
+ACKNOWLEDGED_DESTRUCTIVE: dict[str, str] = {
+    # The four that tighten columns to NOT NULL, and one that rebuilds a
+    # constraint. All were applied to a database that did not exist yet,
+    # where `assert_backwards_compatible` exempts them by design: with no
+    # previous code running against a schema, the property being
+    # protected is not in play. They are listed rather than special-cased
+    # because a restore onto a database already at an earlier revision
+    # would meet the same refusal, and the answer then is the same one.
+    "0004": (
+        "Tightens columns to NOT NULL. Applied on the first deploy, where the "
+        "no-previous-code exemption covers it. Reapplying it to an existing "
+        "database would need the two-deploy split or "
+        "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1."
+    ),
+    "0006": (
+        "Tightens columns to NOT NULL. Same first-deploy exemption and the same "
+        "remedy as 0004 if it is ever met on an existing database — split across "
+        "two deploys or ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1."
+    ),
+    "0007": (
+        "Rebuilds a constraint and tightens a column. Same first-deploy exemption "
+        "as 0004; on an existing database it needs the two-deploy split or "
+        "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1 for one deploy."
+    ),
+    "0008": (
+        "Replaces an `assigned_at` ordering with a monotonic counter and tightens "
+        "it to NOT NULL — the fix for issue A1's original bug. First-deploy "
+        "exemption; otherwise two deploys or ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1."
+    ),
+    "0020": (
+        "Rebuilds three unique constraints — dropping and recreating is the only "
+        "way to change a constraint's columns or its NULL handling — and adds "
+        "institutional_ownership.content_fingerprint as NOT NULL. Code from before "
+        "this revision names the old constraint in its ON CONFLICT clause and does "
+        "not supply the new column, so it genuinely breaks: the refusal is correct. "
+        "Ship it as the second of two deploys, or set "
+        "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1 for one deploy once the only writer of "
+        "those three tables (the ingestion cron, replaced wholesale by the same "
+        "deploy) is running the new code."
+    ),
+}
 
 _ESCAPE_ENV_VAR = "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION"
 

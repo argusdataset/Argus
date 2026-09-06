@@ -60,6 +60,24 @@ code is never counted as a purchase, and a NOT NULL sentinel would be a
 value that lies about what was read. This only makes two
 identically-unreadable rows the same row, which is what they are.
 
+## This migration is refused by default, and that is correct
+
+`infra/deploy/migrate.py` stops a deploy whose migration would break
+containers still running the previous code. This one qualifies twice
+over: it drops constraints that older code names in its `ON CONFLICT`
+clause, and it adds a NOT NULL column older code does not supply. The
+first deploy carrying it therefore fails at the migration step, and every
+web service then fails its health check — `check_health` reports `down`
+when the schema is not the revision the code expects.
+
+The remedy is `ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1` for one deploy, and
+it is safe here for a specific reason rather than as a general dispensation:
+the only writer of these three tables is the ingestion cron, which is
+replaced wholesale by the same deploy rather than rolling, so no old code
+writes them once the new image exists. `ACKNOWLEDGED_DESTRUCTIVE` records
+this, and `tests/unit/deploy/test_migration_safety.py` fails if a
+destructive migration is ever added without such a note.
+
 ## Rebuilding a unique constraint is not rebuilding the data
 
 All three tables are empty in every environment today. Even if they were

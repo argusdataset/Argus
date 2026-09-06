@@ -148,3 +148,105 @@ def test_the_override_does_not_reach_the_process_environment(monkeypatch):
 def test_a_plan_knows_whether_there_is_anything_to_do():
     assert MigrationPlan(current="0013", head="0013", pending=()).up_to_date
     assert not MigrationPlan(current="0012", head="0013", pending=("0013",)).up_to_date
+
+
+# --------------------------------------------------------------------------
+# The rule, run over this repository's own migrations
+#
+# Everything above tests the mechanism against migrations the test itself
+# writes. That is the right way to test a rule — and it meant the rule had
+# never been applied to the artefacts it protects. Migration 0020 rebuilds
+# three unique constraints, which is genuinely backwards-incompatible, and
+# nobody found out until the deploy refused it and six web services failed
+# their health checks against a schema one revision behind.
+#
+# So these run `destructive_operations` over the real `versions/`
+# directory. A destructive migration is not forbidden — it is required to
+# be *declared*, with what an operator has to do about it. The failure
+# then happens at commit time, in a message that says what to write, and
+# not in a production deploy log.
+# --------------------------------------------------------------------------
+
+
+def _repository_migrations() -> dict[str, str]:
+    """Every migration in `versions/`, by revision id, as source text."""
+    from infra.deploy.migrate import ALEMBIC_INI
+
+    versions = ALEMBIC_INI.parent / "migrations" / "versions"
+    sources: dict[str, str] = {}
+    for path in sorted(versions.glob("[0-9]*.py")):
+        sources[path.name.split("_", 1)[0]] = path.read_text()
+    return sources
+
+
+def test_the_scan_finds_this_repositorys_migrations():
+    """A guard over an empty set passes forever.
+
+    The assertions below are subtractions, so an empty scan satisfies
+    them trivially — a renamed directory or a changed filename convention
+    would turn the whole section into a tautology without failing.
+    """
+    found = _repository_migrations()
+
+    assert len(found) >= 20
+    assert "0001" in found and "0020" in found
+
+
+def test_every_destructive_migration_is_acknowledged():
+    """The test that would have caught 0020 before it reached a deploy.
+
+    Failing here means a migration drops or alters something and nobody
+    said so. That is not a reason to change the migration — rebuilding a
+    unique constraint requires dropping it, and there is no other way —
+    it is a reason to write down what the deploy needs, in
+    `ACKNOWLEDGED_DESTRUCTIVE`, so the refusal is expected rather than
+    discovered from a failed health check.
+    """
+    from infra.deploy.migrate import ACKNOWLEDGED_DESTRUCTIVE, destructive_operations
+
+    undeclared = {
+        revision: destructive_operations(source, function="upgrade")
+        for revision, source in _repository_migrations().items()
+        if destructive_operations(source, function="upgrade")
+        and revision not in ACKNOWLEDGED_DESTRUCTIVE
+    }
+
+    assert undeclared == {}, (
+        f"these migrations would be refused by a deploy and are not declared: "
+        f"{undeclared}. Add each to ACKNOWLEDGED_DESTRUCTIVE with what an operator "
+        "has to do — either split it across two deploys, or set "
+        "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1 for one deploy and why that is safe."
+    )
+
+
+def test_no_acknowledgement_outlives_the_migration_it_describes():
+    """A stale entry is worse than none.
+
+    It tells the next reader that a revision needs care when it does not,
+    and it makes the list something people stop trusting — at which point
+    the test above stops being read too.
+    """
+    from infra.deploy.migrate import ACKNOWLEDGED_DESTRUCTIVE, destructive_operations
+
+    sources = _repository_migrations()
+    for revision in ACKNOWLEDGED_DESTRUCTIVE:
+        assert revision in sources, f"{revision} is acknowledged but no longer exists"
+        assert destructive_operations(sources[revision], function="upgrade"), (
+            f"{revision} is acknowledged as destructive but its upgrade() no longer "
+            "does anything destructive — remove the entry"
+        )
+
+
+def test_an_acknowledgement_says_what_to_do_about_it():
+    """A reason, not a name.
+
+    The value is what an operator reads at 2am when a deploy refuses, so
+    it has to name the remedy rather than restate the problem.
+    """
+    from infra.deploy.migrate import _ESCAPE_ENV_VAR, ACKNOWLEDGED_DESTRUCTIVE
+
+    for revision, reason in ACKNOWLEDGED_DESTRUCTIVE.items():
+        assert len(reason.split()) >= 20, f"{revision}'s acknowledgement is too thin"
+        assert _ESCAPE_ENV_VAR in reason or "two deploys" in reason, (
+            f"{revision}'s acknowledgement does not say how to proceed"
+        )
