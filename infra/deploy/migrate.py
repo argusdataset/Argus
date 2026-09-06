@@ -55,9 +55,11 @@ it that a shell string cannot:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +68,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
 from infra.db.connection import create_db_engine
 from infra.deploy.cli import refuse_arguments
@@ -171,6 +174,30 @@ ACKNOWLEDGED_DESTRUCTIVE: dict[str, str] = {
 }
 
 _ESCAPE_ENV_VAR = "ARGUS_ALLOW_DESTRUCTIVE_MIGRATION"
+
+#: Session-scoped Postgres advisory lock key that serializes every
+#: process's preDeploy migration step against every other's.
+#:
+#: Every process now runs this module as its own preDeploy command (see
+#: `infra/deploy/processes.py`), because a single owner left the other
+#: eight services racing ahead of a refused migration in production —
+#: they started new code against a schema `identity` alone was still
+#: trying to advance, and failed their health checks. Making the step
+#: universal only helps if the N containers that now call
+#: `upgrade_to_head` within the same few seconds do not also race *each
+#: other*: Alembic's version table is not a lock, so two concurrent
+#: `command.upgrade(..., "head")` calls contend for the same DDL at the
+#: Postgres lock manager, and the loser does not find the work already
+#: done — it fails with an "already exists" style error once the winner
+#: commits.
+#:
+#: The value is arbitrary; it only has to be stable across every process
+#: that imports this module and distinct from any other advisory lock
+#: ARGUS ever takes (there are none today). Advisory locks key on the
+#: connected database as well as this number, so isolated per-test
+#: databases (see `tests/integration/deploy/`) never contend with each
+#: other or with a real deploy.
+_MIGRATION_LOCK_KEY = 279_402_006_009  # no meaning beyond being unique
 
 
 class BackwardsIncompatibleMigration(RuntimeError):
@@ -289,36 +316,74 @@ def assert_backwards_compatible(plan: MigrationPlan, *, env: dict[str, str] | No
     )
 
 
+@contextlib.contextmanager
+def _migration_lock(engine: Any) -> Iterator[None]:
+    """Hold `_MIGRATION_LOCK_KEY` for the duration of the check-and-apply below.
+
+    A dedicated connection, so the lock's lifetime is independent of
+    whatever connection `pending_migrations` or `command.upgrade` open for
+    themselves. Released by explicitly unlocking (so the next waiter does
+    not sit through this process's own cleanup) and then closing the
+    connection regardless (so the lock is released even if this process
+    is killed between acquiring it and the explicit unlock — Postgres
+    drops every session-level advisory lock a session held the moment
+    that session ends, with no manual cleanup required).
+    """
+    connection = engine.connect()
+    try:
+        connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        connection.close()
+
+
 def upgrade_to_head(
     engine: Any | None = None, *, env: dict[str, str] | None = None
 ) -> MigrationPlan:
-    """Apply every pending migration. Returns the plan that was applied."""
-    plan = pending_migrations(engine)
+    """Apply every pending migration. Returns the plan that was applied.
 
-    if plan.up_to_date:
+    Guarded by `_migration_lock`: every process's preDeploy step calls
+    this now, so the check-then-apply sequence has to be atomic across
+    processes, not just within one. Whichever process acquires the lock
+    first does the real work (or hits the refusal below and raises);
+    every process that was waiting then re-reads the plan and finds
+    either the schema already at head — the fast path just below — or
+    the identical pending, destructive plan the winner also saw, and
+    raises the identical refusal. Either the whole fleet advances
+    together or the whole fleet's deploy is refused together; there is no
+    state in between where some processes see one schema and others see
+    another.
+    """
+    resolved = engine if engine is not None else create_db_engine()
+    with _migration_lock(resolved):
+        plan = pending_migrations(resolved)
+
+        if plan.up_to_date:
+            _log.info(
+                "schema already at head",
+                extra={"event": "migrations_up_to_date", "revision": plan.current},
+            )
+            return plan
+
+        assert_backwards_compatible(plan, env=env)
+
         _log.info(
-            "schema already at head",
-            extra={"event": "migrations_up_to_date", "revision": plan.current},
+            "applying migrations",
+            extra={
+                "event": "migrations_applying",
+                "from_revision": plan.current,
+                "to_revision": plan.head,
+                "count": len(plan.pending),
+            },
+        )
+        command.upgrade(_config(), "head")
+        _log.info(
+            "migrations applied",
+            extra={"event": "migrations_applied", "revision": plan.head},
         )
         return plan
-
-    assert_backwards_compatible(plan, env=env)
-
-    _log.info(
-        "applying migrations",
-        extra={
-            "event": "migrations_applying",
-            "from_revision": plan.current,
-            "to_revision": plan.head,
-            "count": len(plan.pending),
-        },
-    )
-    command.upgrade(_config(), "head")
-    _log.info(
-        "migrations applied",
-        extra={"event": "migrations_applied", "revision": plan.head},
-    )
-    return plan
 
 
 def main(argv: list[str] | None = None) -> int:

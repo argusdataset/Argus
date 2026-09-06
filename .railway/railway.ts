@@ -8,7 +8,7 @@
 // services themselves — see dashboard_settings() in
 // infra/deploy/railway.py for the exact values:
 //   - dockerfile: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
-//   - preDeployCommand: identity
+//   - preDeployCommand: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
 //   - cronSchedule: ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
 //   - restartPolicy: terminal, public_stats, intelligence, identity, telegram, health, ingestion, scanner, telegram_dispatch, retention, ownership_signals, news_signals
 //

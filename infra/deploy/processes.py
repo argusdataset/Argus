@@ -107,11 +107,22 @@ class ProcessDefinition:
         }
 
 
-#: The pre-deploy command every web service runs before Railway routes
-#: traffic to the new container. Non-zero abandons the deploy and the old
-#: containers keep serving — which is the entire safety property, and the
-#: reason this is a pre-deploy command rather than something the app does
-#: at startup.
+#: The pre-deploy command every process runs before Railway routes traffic
+#: to the new container (or, for a cron process, before it becomes
+#: eligible to fire). Non-zero abandons the deploy and the old containers
+#: keep serving — which is the entire safety property, and the reason
+#: this is a pre-deploy command rather than something the app does at
+#: startup.
+#:
+#: Every process runs it, not just `identity`: a single owner meant that
+#: when its migration was refused, the other services deployed anyway,
+#: immediately expecting a schema `identity` alone was still trying to
+#: reach, and failed their health checks — a real production incident.
+#: `infra.deploy.migrate` serializes the N concurrent invocations this
+#: produces through a Postgres advisory lock, so exactly one does the
+#: real work and the rest either find the schema already current or hit
+#: the identical refusal — see `infra/deploy/migrate.py` for why running
+#: it everywhere needed that lock rather than just running everywhere.
 PRE_DEPLOY_COMMAND = "python -m infra.deploy.migrate"
 
 #: `--no-access-log` on the web processes is deliberate. Uvicorn's access

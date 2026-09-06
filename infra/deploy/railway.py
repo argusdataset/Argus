@@ -29,7 +29,7 @@ settings ARGUS depends on:
 | Setting                     | Needed by            | Where it has to live instead |
 | --------------------------- | -------------------- | ---------------------------- |
 | Dockerfile builder + path   | every service        | Railway service settings     |
-| `preDeployCommand`          | `identity`           | Railway service settings     |
+| `preDeployCommand`          | every service        | Railway service settings     |
 | `cronSchedule`              | `ingestion`, `scanner`, `telegram_dispatch`, `retention` | Railway service settings |
 | Restart policy + retries    | every service        | Railway service settings     |
 
@@ -205,10 +205,16 @@ UNSUPPORTED_BY_IAC: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     (
         "preDeployCommand",
-        ("identity",),
+        tuple(PROCESSES),
         "The migration has to run before traffic reaches new code, and a "
         "non-zero exit has to abandon the deploy. Run from the start command "
-        "instead, a failed migration is a crash loop, not a stopped deploy.",
+        "instead, a failed migration is a crash loop, not a stopped deploy. "
+        "Every process carries it, not just identity: Railway's GitHub-push "
+        "deploys start all services in parallel with no cross-service "
+        "ordering, so a single owner left the rest starting against a "
+        "schema the owner's migration had not yet reached. "
+        "infra/deploy/migrate.py serializes the resulting concurrent "
+        "invocations with a Postgres advisory lock.",
     ),
     (
         "cronSchedule",
@@ -238,9 +244,8 @@ def dashboard_settings(name: str) -> dict[str, Any]:
         "dockerfilePath": DOCKERFILE_PATH,
         "restartPolicyType": RESTART_POLICY,
         "restartPolicyMaxRetries": RESTART_MAX_RETRIES,
+        "preDeployCommand": [PRE_DEPLOY_COMMAND],
     }
-    if name == "identity":
-        settings["preDeployCommand"] = [PRE_DEPLOY_COMMAND]
     if process.schedule:
         settings["cronSchedule"] = process.schedule
     return settings

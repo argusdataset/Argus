@@ -211,7 +211,7 @@ containers does not become a steady background query load.
 ## 4. Deploying
 
     1. push          → Railway builds the image from Dockerfile
-    2. preDeploy     → python -m infra.deploy.migrate      (identity only)
+    2. preDeploy     → python -m infra.deploy.migrate      (every process)
     3. start         → containers boot, run validate(), open pools
     4. health check  → /health/live must pass
     5. route         → traffic moves to the new containers
@@ -221,11 +221,39 @@ containers does not become a steady background query load.
 non-zero exit abandons the deploy and the old containers keep serving.
 That ordering is the entire safety property.
 
-Exactly one service owns the step. Seven services running the same
-migration concurrently would race, and Alembic's version table is not a
-lock. `identity` owns it because it is the service whose schema every
-other service's authentication depends on: if its migration fails, the
-correct outcome is that nothing else deploys either.
+**Every process runs the step, and a Postgres advisory lock is what makes
+that safe.** This used to be `identity` alone, on the reasoning that every
+other service's authentication depends on its schema. That reasoning had
+a gap that reached production: it assumed the other services would *wait*
+for `identity` to finish. They don't. Railway triggers one independent,
+parallel deploy per service from a single GitHub push — there is no
+cross-service ordering in that trigger mode, and Railway's own
+"deployment dependencies" feature (reference-variable-driven startup
+ordering) is documented to apply only to template deploys, staged-changes
+application, environment duplication and PR environments, not to this
+one. So when `identity`'s migration was correctly refused, the other
+eight services deployed anyway, immediately expecting a schema `identity`
+alone was stuck trying to reach, and failed their health checks — five
+deployments FAILED in production from exactly this.
+
+Giving every process the same preDeploy step closes that gap, but only
+because `infra/deploy/migrate.py` also serializes them: Alembic's version
+table is not a lock, so N containers calling `command.upgrade(..., "head")`
+within the same few seconds would otherwise race the same DDL, and the
+loser would crash with an "already exists" error instead of finding the
+work already done. A session-scoped `pg_advisory_lock` around the
+check-then-apply sequence fixes that — whichever process gets there first
+does the real work (or hits a refusal and exits non-zero), and every
+process that was waiting then re-reads the plan and finds either the
+schema already at head or the identical refusal the first process saw.
+Either the whole fleet advances together or the whole fleet's deploy is
+abandoned together; there is no state where some processes see one schema
+and others see another.
+`tests/integration/deploy/test_migrations_before_traffic.py` reproduces
+both halves of this directly: several independent connections calling
+`upgrade_to_head` at the same time, once against a real migration chain
+(no crash, schema reaches head) and once against a pending destructive
+migration (every process refuses identically, none starts).
 
 ### Two commands that are not deploys, and are run by hand
 
@@ -290,12 +318,17 @@ a rolling deploy, so a dropped constraint or a tightened column breaks
 *them*, not the new image. The refusal names the revisions and says what
 to do.
 
-**It costs the whole deploy, not just the migration.** The web services
-still start, but their `/health/live` probe runs `check_health`, which
-reports `down` when the schema is not the revision the code expects — so
-every web service fails its health check against a database left one
-revision behind. That is the correct behaviour and it looks alarming: six
-services failing health checks, one refused migration underneath.
+**It costs the whole deploy, everywhere, before any container starts.**
+Every process now hits the same refusal in its own preDeploy step (see
+§4), abandons its own deploy, and its old container keeps serving —
+nothing reaches step 3, so `check_health` and `/health/live` never come
+into it for this failure mode. That is a change in behaviour from before
+this was fixed: previously only `identity` ran this check, so a refusal
+there left every *other* service starting anyway against a database one
+revision behind, and their health checks failed instead — which is what
+"six services failing health checks, one refused migration underneath"
+used to look like in a Railway dashboard, and is the production incident
+that made every process run this step.
 
 Two ways forward, and the first is the default:
 
@@ -665,7 +698,7 @@ deployment depends on:
 | Setting                    | Needed by              | If it is missing |
 | -------------------------- | ---------------------- | ---------------- |
 | Dockerfile builder + path  | every service          | Railpack builds a different image |
-| `preDeployCommand`         | `identity`             | A failed migration is a crash loop, not an abandoned deploy |
+| `preDeployCommand`         | every service          | A failed migration is a crash loop, not an abandoned deploy |
 | `cronSchedule`             | `ingestion`, `scanner`, `telegram_dispatch`, `retention` | The job runs continuously instead of once |
 | Restart policy and retries | every service          | A container that cannot start looks busy rather than broken |
 

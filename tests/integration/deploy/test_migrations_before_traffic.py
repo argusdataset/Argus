@@ -9,7 +9,10 @@ actually migrate, and it has to actually fail when it should.
 
 from __future__ import annotations
 
-from sqlalchemy import Engine, text
+from concurrent.futures import ThreadPoolExecutor
+
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import URL
 
 from infra.db.append_only import APPEND_ONLY_TABLES
 from infra.deploy import migrate
@@ -156,3 +159,106 @@ def test_the_entrypoint_returns_two_when_it_refuses(monkeypatch):
 def test_the_configured_pre_deploy_command_invokes_this_module():
     """Ties the tested code to the string the platform will actually run."""
     assert PRE_DEPLOY_COMMAND.endswith("infra.deploy.migrate")
+
+
+# --- the deploy race: every process now runs this as its own preDeploy step ----
+#
+# Production incident: only `identity` had this step. Its migration 0020
+# was correctly refused, which left the schema one revision behind — and
+# the other eight services, which had no preDeploy step of their own,
+# started immediately anyway, expecting the revision `identity` alone was
+# stuck trying to reach. `check_health` reported `down`, `/health/live`
+# returned 503, and Railway marked five deployments FAILED. Railway's
+# GitHub-push deploys have no native ordering between services, so the fix
+# is not "wait for identity" but "every process runs the same guarded step,
+# and it produces the same outcome everywhere it runs."
+#
+# `infra.deploy.processes.dashboard_settings` now gives every process that
+# preDeploy step, which means N containers can call `upgrade_to_head`
+# within the same few seconds of one push. The two tests below simulate
+# that directly: several independent connections, each standing in for one
+# container's preDeploy step, calling it at the same time against the same
+# database.
+
+
+def _simulated_fleet(database: URL, size: int) -> list[Engine]:
+    """`size` independent engines against the same database.
+
+    Independent `Engine` objects, not threads sharing one — a real deploy
+    is `size` separate containers, each opening its own connections.
+    """
+    return [create_engine(database) for _ in range(size)]
+
+
+def test_every_process_racing_the_pre_deploy_step_reaches_head_without_crashing(
+    fresh_database, alembic_target
+):
+    """Without `infra.deploy.migrate`'s advisory lock, this is where the
+    ticket's own risk shows up: Alembic's version table is not a lock, so
+    two containers racing the same DDL would serialize only at the
+    Postgres statement level — the loser's `ALTER TABLE`/`CREATE
+    CONSTRAINT` then fails with an "already exists" error once the winner
+    commits, rather than finding the work already done. That would turn
+    "one service fails at migration" into "N-1 services fail at
+    migration," which is worse than the incident this fixes.
+
+    Run against every real migration in the repository, including the
+    four that are destructively exempt on a first deploy (0004, 0006,
+    0007, 0008) — the same real-migrations bar the migration-safety tests
+    hold this repository to, rather than a synthetic one-migration stand-in.
+    """
+    fleet = _simulated_fleet(fresh_database, size=6)
+    checker = create_engine(fresh_database)
+    try:
+        with ThreadPoolExecutor(max_workers=len(fleet)) as pool:
+            list(pool.map(upgrade_to_head, fleet))
+        assert pending_migrations(checker).up_to_date
+    finally:
+        checker.dispose()
+        for engine in fleet:
+            engine.dispose()
+
+
+def test_a_refused_migration_is_refused_identically_for_every_process(
+    fresh_engine: Engine, alembic_target, monkeypatch
+):
+    """The incident itself, reproduced and proven fixed.
+
+    Migrates to a real revision first, then presents every simulated
+    process with the same pending, destructive migration — exactly what
+    every process's preDeploy step would see the moment a refused
+    migration like 0020 reaches production. Before this fix, only
+    `identity` would have seen this at all; the rest would have started
+    their new containers regardless. Now every process runs the same
+    check, and the assertion below is what "no longer FAILs other
+    services" means concretely: none of them starts, all of them abandon
+    their deploy with the identical refusal, and the schema is left
+    exactly where it was — never partially applied.
+    """
+    upgrade_to_head(fresh_engine)
+    current = pending_migrations(fresh_engine).current
+
+    monkeypatch.setattr(
+        migrate,
+        "pending_migrations",
+        lambda engine=None: migrate.MigrationPlan(
+            current=current, head="0099", pending=("0099",), destructive=("0099",)
+        ),
+    )
+
+    fleet = _simulated_fleet(fresh_engine.url, size=4)
+    try:
+        with ThreadPoolExecutor(max_workers=len(fleet)) as pool:
+            futures = [pool.submit(migrate.upgrade_to_head, engine) for engine in fleet]
+            refusals = 0
+            for future in futures:
+                try:
+                    future.result()
+                except BackwardsIncompatibleMigration:
+                    refusals += 1
+    finally:
+        for engine in fleet:
+            engine.dispose()
+
+    assert refusals == len(fleet)
+    assert pending_migrations(fresh_engine).current == current

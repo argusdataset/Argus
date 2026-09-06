@@ -160,21 +160,27 @@ def test_a_failed_container_stops_rather_than_restarting_forever(name: str):
     assert settings["restartPolicyMaxRetries"] == RESTART_MAX_RETRIES > 0
 
 
-def test_exactly_one_service_owns_the_migration():
-    """Seven services running the same migration would race. Alembic's
-    version table is not a lock."""
-    owners = [name for name in PROCESSES if "preDeployCommand" in dashboard_settings(name)]
-    assert owners == ["identity"]
+def test_every_service_owns_the_migration_step():
+    """Giving only `identity` the step left the other eight starting new
+    code against a schema `identity`'s migration had not yet reached — a
+    real production incident, because Railway's GitHub-push deploys run
+    every service in parallel with no cross-service ordering. Every
+    process now runs it; `infra/deploy/migrate.py`'s advisory lock is what
+    keeps the resulting concurrent invocations from racing each other's
+    DDL instead of racing the traffic cutover."""
+    owners = {name for name in PROCESSES if "preDeployCommand" in dashboard_settings(name)}
+    assert owners == set(PROCESSES)
 
 
-def test_the_migration_runs_as_a_pre_deploy_command():
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_the_migration_runs_as_a_pre_deploy_command(name: str):
     """Which is what makes it run *before* traffic reaches the new code.
 
     Run from the start command instead — as the live deployment did until
     this was fixed — a failed migration is a crash loop rather than an
     abandoned deploy, and it runs once per container rather than once.
     """
-    assert dashboard_settings("identity")["preDeployCommand"] == [PRE_DEPLOY_COMMAND]
+    assert dashboard_settings(name)["preDeployCommand"] == [PRE_DEPLOY_COMMAND]
 
 
 @pytest.mark.parametrize("name", sorted(PROCESSES))
