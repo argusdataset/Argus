@@ -1171,6 +1171,73 @@ Fixed in commit `730bb51`.
 
 ---
 
+## I. Production incident (2026-09-06)
+
+### I1. One service owning the migration step left the other eight racing it — **RESOLVED**
+
+Commit `730bb51` (migration 0020, H7's uniqueness-key fix) shipped a
+migration that `assert_backwards_compatible` correctly refused: it drops
+constraints an older `ON CONFLICT` clause names and adds a NOT NULL
+column older code does not supply. `identity` was the only service with
+a `preDeployCommand`, on the reasoning that every other service's
+authentication depends on its schema — and on an unstated assumption the
+reasoning didn't need until this incident: that the other services would
+*wait* for `identity`'s migration to finish.
+
+They don't, and can't with Railway's actual trigger. A single push
+starts one independent deploy per service; Railway's own "deployment
+dependencies" feature (reference-variable-driven startup ordering) is
+documented to apply only to template deploys, staged-changes application,
+environment duplication and PR environments — not to this trigger. So
+while `identity`'s migration sat refused, the other eight services
+deployed anyway, immediately expecting the revision `identity` alone was
+stuck trying to reach. `check_health` reported `down`, `/health/live`
+returned 503 on every probe, and five deployments (`Argus`,
+`Public_stats`, `intelligence`, `telegram`, `health`) were marked FAILED
+by Railway's retry window. Recovered operationally, not by a code change:
+`ARGUS_ALLOW_DESTRUCTIVE_MIGRATION=1` for one deploy (the three affected
+tables were empty in every environment, confirmed before forcing it),
+then each FAILED deployment redeployed by hand — Railway does not retry
+those on its own.
+
+Not a fluke of timing. Every future migration — even a safe one
+`assert_backwards_compatible` would never refuse — carried the same race
+whenever `identity`'s build-and-migrate time did not comfortably outrun
+the other services' boot time; a refused migration just made the race
+deterministic instead of probabilistic, because the schema then never
+advances at all.
+
+**The fix.** Every process now runs `python -m infra.deploy.migrate` as
+its own preDeploy step (`dashboard_settings()` in `infra/deploy/railway.py`,
+regenerated into `.railway/railway.ts`), so no service can start ahead of
+the schema its own code expects. That only works because
+`infra/deploy/migrate.py` also serializes the resulting concurrent
+invocations through a session-scoped Postgres advisory lock — Alembic's
+version table is not a lock, so N containers calling `command.upgrade`
+within the same few seconds would otherwise race the same DDL, and the
+loser would crash with an "already exists" error rather than finding the
+work already done. Whichever process acquires the lock first does the
+real work or hits the refusal; every process that waited then finds
+either the schema already at head or the identical refusal — the whole
+fleet advances together or is refused together, never split between the
+two.
+
+Railway's per-service startup-ordering feature was checked directly
+against its own documentation before being ruled out, rather than assumed
+absent: it names exactly which deploy triggers it covers, and a GitHub
+push is not one of them.
+
+`tests/integration/deploy/test_migrations_before_traffic.py` reproduces
+both halves: several independent connections calling `upgrade_to_head`
+at the same time, once against the repository's real migration chain (no
+DDL-race crash, schema reaches head) and once against a pending
+destructive migration (every process refuses identically, none starts,
+schema unchanged) — the second is the incident itself, proven fixed.
+
+Fixed in commit `719a3e5`.
+
+---
+
 ## Summary
 
 | Severity | Open | Deferred | Closed |
@@ -1178,7 +1245,7 @@ Fixed in commit `730bb51`.
 | HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3, H1-H8 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3, H1-H8, I1 |
 
 **The H series was found by a pre-key audit at `d8d5337`** and none of it
 appeared in any module report. Two patterns run through it and are worth
