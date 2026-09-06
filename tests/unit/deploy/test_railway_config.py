@@ -22,9 +22,11 @@ import pytest
 from infra.deploy.processes import PRE_DEPLOY_COMMAND, PROCESSES
 from infra.deploy.railway import (
     DOCKERFILE_PATH,
+    FMP_TUNING_VARIABLES,
     HEALTHCHECK_TIMEOUT_SECONDS,
     IAC_PATH,
     POSTGRES_SERVICE,
+    PROVIDER_TUNING,
     RESTART_MAX_RETRIES,
     RESTART_POLICY,
     SERVICE_NAMES,
@@ -188,3 +190,83 @@ def _service_block(committed: str, service_name: str) -> str:
     start = committed.index(f'service("{service_name}"')
     end = committed.index("});", start)
     return committed[start:end]
+
+
+# --------------------------------------------------------------------------
+# FMP plan tuning
+#
+# The generated file is the whole environment — "omit means delete" — so a
+# rate raised by hand in the Railway panel was removed by the next apply
+# and the code fell back to `fmp_requests_per_minute = 300`, the Starter
+# limit. An Ultimate subscription would have run at a tenth of its
+# throughput, and `strategy.py`'s bulk path (which needs >= 3000) would
+# never have enabled, with nothing saying so.
+#
+# The values are deliberately not chosen here: which numbers are correct
+# depends on the plan actually paid for. What is fixed is that the
+# variables are *named*, so a value set in the panel survives.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(PROVIDER_TUNING))
+def test_a_fetching_service_can_carry_its_fmp_tuning(committed: str, name: str):
+    """Named in the file, so `preserve()` keeps whatever Railway holds."""
+    block = _service_block_for(committed, name)
+
+    for variable in FMP_TUNING_VARIABLES:
+        assert f"{variable}: preserve()" in block
+
+
+def test_the_tuning_variables_are_the_names_the_settings_actually_read():
+    """A variable nobody reads is worse than no variable.
+
+    `ProvidersSettings` is nested under `AppConfig`, so the names carry
+    the `ARGUS_` prefix and the `__` delimiter — get either wrong and the
+    value is accepted by Railway, ignored by the process, and the
+    difference is invisible until someone measures the request rate.
+    """
+    from packages.config.settings import ProvidersSettings
+
+    fields = set(ProvidersSettings.model_fields)
+    for variable in FMP_TUNING_VARIABLES:
+        assert variable.startswith("ARGUS_PROVIDERS__")
+        assert variable.removeprefix("ARGUS_PROVIDERS__").lower() in fields
+
+
+def test_the_defaults_stay_conservative():
+    """This change opens a door; it must not walk through it.
+
+    Running ten times too fast against a plan that does not allow it is a
+    worse failure than running slowly, so the shipped defaults stay at
+    the most conservative paid tier and the operator raises them
+    deliberately.
+    """
+    from packages.config.settings import ProvidersSettings
+
+    settings = ProvidersSettings()
+    assert settings.fmp_requests_per_minute == 300
+    assert settings.fmp_max_concurrency == 8
+
+
+def test_no_service_that_does_not_fetch_carries_provider_tuning(committed: str):
+    """Scoped to the two processes that actually call FMP.
+
+    `news_signals` and `ownership_signals` read tables ingestion already
+    filled; a rate limit there would be a variable with no effect and a
+    reader wondering what it does.
+    """
+    for name in sorted(set(PROCESSES) - set(PROVIDER_TUNING)):
+        block = _service_block_for(committed, name)
+        for variable in FMP_TUNING_VARIABLES:
+            assert variable not in block
+
+
+def _service_block_for(committed: str, name: str) -> str:
+    """One service's generated block, from its start command to its close.
+
+    Sliced from the rendered text rather than re-rendered, so these
+    assertions are about the file that is committed and applied.
+    """
+    identifier = name if name != "identity" else "identityService"
+    start = committed.index(f"const {identifier} = service(")
+    return committed[start : committed.index("});", start)]

@@ -227,6 +227,61 @@ lock. `identity` owns it because it is the service whose schema every
 other service's authentication depends on: if its migration fails, the
 correct outcome is that nothing else deploys either.
 
+### Two commands that are not deploys, and are run by hand
+
+**Building the universe.** `ARGUS_UNIVERSE_VERSION` gates `ingestion` and
+`scanner`; both exit 2 without it, and nothing creates one on a schedule
+— deliberately, because a rotating universe version would point the two
+jobs at whatever the last run produced. Run it once, per environment:
+
+```
+railway run --service ingestion python -m infra.deploy.universe
+```
+
+It prints one line — `ARGUS_UNIVERSE_VERSION=<label>` — for the platform
+variable, and logs the same label under `universe_version_label`.
+
+Its exit code carries the one thing that is easy to get wrong. **Exit 1
+means the version was built and the next ingestion would find nobody in
+it.** With no price history yet, a security's listing interval can only
+start when ARGUS first saw it, and the next ingestion reads members as of
+a cutoff that falls at 14:00 UTC for the session already due — so a build
+later in the day is dated *after* the instant that run asks about. The
+run would log `universe_size: 0` and exit healthy. Either build before
+14:00 UTC, or backfill price history first and rebuild, which dates the
+intervals from real bars.
+
+**Backfilling price history.** See §10.
+
+### Tuning the FMP plan
+
+`ingestion` and `scanner` carry two variables the generated config names
+but does not value:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `ARGUS_PROVIDERS__FMP_REQUESTS_PER_MINUTE` | 300 | Standard-endpoint rate |
+| `ARGUS_PROVIDERS__FMP_MAX_CONCURRENCY` | 8 | Simultaneous in-flight requests |
+
+They are `preserve()` in `.railway/railway.ts`, which is what makes a
+value set in the Railway panel survive the next `railway config apply` —
+before that, "omit means delete" removed it and the process fell back to
+300, the Starter limit, whatever plan was being paid for.
+
+**After buying a plan, set both.** Raising the rate alone is not enough:
+at eight concurrent requests and realistic network latency the achievable
+throughput is roughly 1,600–2,400 a minute, so a 3,000/min entitlement
+stays a third unused until the concurrency rises with it. And
+`core/ingestion/strategy.py` switches to the bulk endpoint strategy only
+at `>= 3000`, so a plan that allows it does not get it until the variable
+says so.
+
+The values are not written down here because they belong to the
+subscription rather than to the code, and the shipped defaults stay at
+the most conservative paid tier: a process that silently runs ten times
+too fast against a plan that forbids it is a worse failure than one that
+runs slowly.
+
 ### What running migrations first does *not* buy
 
 New code never sees an old schema. Old code **does** see the new one —
@@ -652,3 +707,51 @@ a claim that ages, not a live value: the tools to check it directly are
 `mcp__Railway__environment-status` and `mcp__Railway__list-services`
 against project `passionate-unity`, and they cost one call each. Prefer
 them over this section whenever the two might disagree.
+
+## 10. Backfilling price history
+
+`python -m infra.deploy.backfill`, once per environment, before expecting
+statistics.
+
+Without it, history accumulates one day per day forwards from whenever
+ingestion first ran — and nothing ARGUS is for works until there are 252
+bars per security. `atr_percentile` is NaN below that window, both
+detection states require it, and a setup opens from nowhere else. So the
+first twelve to thirteen months produce watchlists and Telegram alerts
+and an empty outcome record, which is the combination most likely to look
+fine and be worthless.
+
+```
+ARGUS_BACKFILL_START=2010-01-01 \
+  railway run --service ingestion python -m infra.deploy.backfill
+```
+
+| Variable | Required | Default |
+|---|---|---|
+| `ARGUS_BACKFILL_START` | yes | none — see below |
+| `ARGUS_BACKFILL_END` | no | today |
+| `ARGUS_BACKFILL_SYMBOLS` | no | every universe member |
+| `ARGUS_BACKFILL_ACTIONS` | no | `1` (fetch splits and dividends too) |
+
+**There is no default start date, on purpose.** Fifteen years hardcoded
+would be a spending decision this repository is not entitled to make on
+someone's behalf. The job refuses with exit 2 rather than picking one.
+
+**It fetches corporate actions with the prices, and you should let it.**
+Fifteen years of unadjusted history is issue G2 with a longer reach:
+every split in it is an uncorrected discontinuity, and Module 15 reads
+each one as a catastrophic single-bar failure of a setup that succeeded.
+Two extra requests per symbol removes the class. `ARGUS_BACKFILL_ACTIONS=0`
+exists for a re-run that only needs prices.
+
+**It is resumable and it will need to be.** Each symbol is checkpointed as
+it completes, so a container restart continues rather than starting over.
+The checkpoint name carries the range, so 2010-2015 and 2015-2020 are two
+jobs — sharing one would make the second believe the first had already
+covered its symbols.
+
+**It logs its cost before starting**: requests per symbol, the configured
+rate, and the estimated minutes. Read that line before walking away.
+
+Exit codes: `0` wrote history or found everything already checkpointed,
+`1` ran and wrote nothing, `2` no range configured or no universe.

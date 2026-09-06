@@ -127,6 +127,8 @@ export default defineRailway((ctx) => {
       ARGUS_ENV: prod ? "production" : "staging",
       DATABASE_URL: db.env.DATABASE_URL,
       ARGUS_UNIVERSE_VERSION: preserve(),
+      ARGUS_PROVIDERS__FMP_REQUESTS_PER_MINUTE: preserve(),
+      ARGUS_PROVIDERS__FMP_MAX_CONCURRENCY: preserve(),
       FMP_API_KEY: preserve(),
     },
   });
@@ -139,6 +141,8 @@ export default defineRailway((ctx) => {
       ARGUS_ENV: prod ? "production" : "staging",
       DATABASE_URL: db.env.DATABASE_URL,
       ARGUS_UNIVERSE_VERSION: preserve(),
+      ARGUS_PROVIDERS__FMP_REQUESTS_PER_MINUTE: preserve(),
+      ARGUS_PROVIDERS__FMP_MAX_CONCURRENCY: preserve(),
       FMP_API_KEY: preserve(),
     },
   });

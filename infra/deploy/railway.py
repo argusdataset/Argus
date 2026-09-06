@@ -164,6 +164,35 @@ SECRET_VARIABLES: dict[str, tuple[str, ...]] = {
     "ownership_signals": (),
 }
 
+#: Provider tuning each fetching process may carry, rendered as
+#: `preserve()` so a value set in the Railway panel survives the next
+#: `railway config apply`.
+#:
+#: Named here and **never valued**, deliberately. The right numbers
+#: depend on which FMP plan is actually paid for, and this file's own
+#: header states the rule that makes naming them necessary: *omit means
+#: delete*. Before this, a rate raised by hand in the panel was silently
+#: removed by the next apply, and the code fell back to
+#: `fmp_requests_per_minute = 300` — the Starter limit — while an
+#: Ultimate subscription went unused at a tenth of its throughput, with
+#: `core/ingestion/strategy.py`'s bulk path (which needs >= 3000) never
+#: enabling either.
+#:
+#: The defaults stay conservative on purpose: a process that silently
+#: runs ten times too fast against a plan that does not allow it is a
+#: worse failure than one that runs slowly. See `infra/deploy/README.md`
+#: for what to set after buying a plan.
+#: Both settings, in the order an operator changes them: the rate first,
+#: then the concurrency without which the rate cannot be reached.
+FMP_TUNING_VARIABLES: tuple[str, ...] = (
+    "ARGUS_PROVIDERS__FMP_REQUESTS_PER_MINUTE",
+    "ARGUS_PROVIDERS__FMP_MAX_CONCURRENCY",
+)
+
+PROVIDER_TUNING: dict[str, tuple[str, ...]] = dict.fromkeys(
+    ("ingestion", "scanner"), FMP_TUNING_VARIABLES
+)
+
 #: The four settings the IaC DSL has no field for, as data. Each entry is
 #: (setting, which processes need it, why it matters).
 UNSUPPORTED_BY_IAC: tuple[tuple[str, tuple[str, ...], str], ...] = (
@@ -243,6 +272,12 @@ def _env_lines(name: str, indent: str) -> list[str]:
         # universe while another is what a reader sees would be a silent,
         # very confusing failure.
         lines.append(f"{indent}ARGUS_UNIVERSE_VERSION: preserve(),")
+    for variable in PROVIDER_TUNING.get(name, ()):
+        # `preserve()` rather than a literal: the right value depends on
+        # the FMP plan in force, which this file cannot know and must not
+        # guess. Naming them is what stops the next apply deleting a
+        # value set by hand. See PROVIDER_TUNING.
+        lines.append(f"{indent}{variable}: preserve(),")
     for variable in SECRET_VARIABLES[name]:
         lines.append(f"{indent}{variable}: preserve(),")
     return lines

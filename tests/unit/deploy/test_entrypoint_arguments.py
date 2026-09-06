@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import pytest
 
-from infra.deploy import migrate, retention, scanner
+from infra.deploy import backfill, migrate, retention, scanner, universe
 from infra.deploy.cli import UnexpectedArguments, refuse_arguments
 
 ENTRYPOINTS = [
     ("infra.deploy.migrate", migrate),
     ("infra.deploy.scanner", scanner),
     ("infra.deploy.retention", retention),
+    ("infra.deploy.universe", universe),
+    ("infra.deploy.backfill", backfill),
 ]
 
 #: What Railway actually passed, verbatim.

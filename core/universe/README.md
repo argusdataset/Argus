@@ -8,14 +8,28 @@ Universe — built in Module 06. Answers one question, for **any** date:
 from core.universe import build_intervals_from_fetch, construct_version, UniverseRepository
 from data.normalization.identity import SecurityIdentityResolver
 
+# `engine.begin()`, not `engine.connect()`. Under SQLAlchemy 2.0 a
+# connection that closes without an explicit commit rolls back — so the
+# earlier version of this example fetched ten thousand tickers,
+# registered their identities, wrote the version and its membership, and
+# then discarded all of it, with a log that looked like success.
 async with FmpClient() as client:
-    resolver = SecurityIdentityResolver(connection)
-    construction = await build_intervals_from_fetch(FmpFetcher(client), resolver)
+    with engine.begin() as connection:
+        construction = await build_intervals_from_fetch(
+            FmpFetcher(client), SecurityIdentityResolver(connection)
+        )
 
-repository = UniverseRepository(connection)
-today = construct_version(construction, repository)
-back_then = construct_version(construction, repository, as_of=datetime(2015, 3, 1, tzinfo=UTC))
+with engine.begin() as connection:
+    repository = UniverseRepository(connection)
+    today = construct_version(construction, repository)
+    back_then = construct_version(construction, repository, as_of=datetime(2015, 3, 1, tzinfo=UTC))
 ```
+
+In practice you do not write this: **`python -m infra.deploy.universe`**
+does it, commits it, prints the label to set as `ARGUS_UNIVERSE_VERSION`,
+and refuses with exit 1 if the next scheduled ingestion would find no
+members in what it just built. See that module's docstring for the timing
+trap it checks.
 
 One fetch produces intervals; those intervals can be re-sliced into a
 version for any date without refetching.
