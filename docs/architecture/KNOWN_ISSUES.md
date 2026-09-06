@@ -821,6 +821,356 @@ Fixed in commit `66a343e`.
 
 ---
 
+## H. Pre-key audit (2026-09-06)
+
+Eight findings from an audit run at `d8d5337`, before purchasing an FMP
+Ultimate subscription. All eight are **RESOLVED**. None of them raises an
+error; every one of them is either silent data loss or a job that reports
+success while doing nothing, which is why they were worth finding before
+real data started accumulating rather than after.
+
+Two general lessons run through them and are worth stating once:
+
+- **Working code with no caller is the most common defect in this
+  repository.** G2 was the first instance; H1, H2 and H4 are three more.
+  In each case every piece was written, tested and correct, and nothing
+  invoked it. A test suite cannot see this, because a unit test *is* a
+  caller.
+- **A guard that compares two lists cannot see something missing from
+  both.** H6's append-only drift test had exactly that shape and passed
+  while three tables went unguarded for two migrations.
+
+---
+
+### H1. Nothing could build a universe version — **RESOLVED**
+
+`ARGUS_UNIVERSE_VERSION` gates `ingestion` and `scanner`; both resolve it
+through `resolve_universe_version` and both exit 2 without it.
+`core/universe/builder.py`'s `build_intervals_from_fetch` and
+`construct_version` are the only functions that create one, both were
+complete and tested, and **neither had a caller outside `tests/`**.
+Twelve entrypoints existed under `infra/deploy/`; none built a universe.
+
+G2's pattern one level up, with a worse consequence: there the data was
+wrong, here there was no data and no way to start.
+
+**The fix.** `infra/deploy/universe.py`, shaped like the twelve
+entrypoints beside it — `refuse_arguments`, `profile_for().validate()`,
+structured logging, the same three exit codes. It prints
+`ARGUS_UNIVERSE_VERSION=<label>` on stdout for the platform variable.
+
+Not a cron, deliberately. A rotating universe version would point both
+jobs at whatever the last run produced, which is the "latest row wins"
+hazard A1 catalogues four instances of.
+
+**The README example never committed.** Under SQLAlchemy 2.0 a
+`Connection` that closes without `commit()` rolls back, so following
+`core/universe/README.md` would fetch ten thousand tickers, register their
+identities, write the version and its membership, and discard all of it
+with a successful-looking log. Corrected, and the entrypoint's own test
+reads the rows back on a separate connection — which is the only way to
+tell a commit from a convincing in-transaction read.
+
+**The timing trap, which is more common than it first looks.** With no
+price history a security's listing interval starts at the moment ARGUS
+first saw it (`IntervalEvidence.FIRST_OBSERVED`, erring narrow on purpose
+— claiming an earlier listing is the survivorship lie Module 06 exists to
+prevent). The ingestion reads members at `as_of_for(trading_date)`, and
+that cutoff is session close plus seventeen hours: **14:00 UTC**. So a
+universe built at any point after 14:00 UTC is dated later than the
+instant the next run asks about, and that run finds zero members, logs
+`universe_size: 0`, and exits healthy.
+
+The entrypoint slices its own intervals at that exact instant, counts
+them, and exits 1 naming both dates rather than letting it be discovered
+from an ingestion log. The tests pin both sides of the boundary, verified
+against `scan_date_for`/`as_of_for` rather than reasoned about — the
+first version of them had the two cases backwards.
+
+Fixed in commit `a81873e`.
+
+---
+
+### H2. Ownership and Terminal data were never ingested on a healthy run — **RESOLVED**
+
+The ingestion stages ran in this order:
+
+1. `refresh_due_securities` — writes a `deep_refresh_log` row for every
+   security it refreshes, stamped with the run's own trading date.
+2. `_ingest_ownership_data` — asks "who is due today?"
+3. `_ingest_terminal_data` — asks the same question.
+
+Both later stages answered it from that same log, through `tiers.decide`:
+
+```python
+if last.refreshed_on >= target_date:
+    return DueDecision(due=False, trigger=ALREADY_REFRESHED, ...)
+```
+
+So on every run where step 1 succeeded, steps 2 and 3 saw an empty list.
+`insider_trades`, `institutional_ownership`, `canonical_disclosures`,
+`canonical_snapshots`, `analyst_grades` and `technical_indicators` were
+never written — every table the Ultimate plan is bought for, and the
+entire output of two prior work items.
+
+**Why the tests could not see it**, which is the transferable part:
+
+- `FakeFetcher` had none of the Ultimate methods, so the capability
+  guards marked both stages "skipped" and the empty list was never
+  reached. A double that cannot do the thing under test will agree that
+  the thing works.
+- `test_ownership_ingestion.py` and `test_terminal_data.py` call the
+  stage functions directly with a hand-built `due=[member]`. That is the
+  right shape for testing those functions and it steps over exactly the
+  part that was broken.
+
+**The fix.** The due list is computed once, before the deep refresh, and
+the same list is passed to all three stages — which is what one cadence
+should always have meant. `tests/integration/ingestion/test_stage_ordering.py`
+asserts it at the orchestrator level against a fetcher that can actually
+serve the endpoints, and fails on the old code.
+
+Fixed in commit `730bb51`.
+
+---
+
+### H3. The FMP plan rate could not be set from the deployment — **RESOLVED**
+
+`.railway/railway.ts` names four variables for `ingestion` and no rate
+setting, and that file is the whole environment — its own header says
+*omit means delete*. So a rate raised by hand in the Railway panel was
+removed by the next `railway config apply`, and the process fell back to
+`fmp_requests_per_minute = 300`, the Starter limit, whatever plan was
+being paid for.
+
+Two consequences beyond the obvious tenfold: `core/ingestion/strategy.py`
+switches to the bulk endpoint strategy only at `>= 3000`, so that never
+enabled either; and at `fmp_max_concurrency = 8` the achievable
+throughput is roughly 1,600-2,400 a minute regardless, so raising the
+rate alone leaves a third of a 3,000/min entitlement unused.
+
+**The fix.** Both variables are named in `infra/deploy/processes.py`'s
+generated config as `preserve()`, for `ingestion` and `scanner` only —
+`news_signals` and `ownership_signals` read tables ingestion already
+filled and would carry a setting with no effect. A value set in the panel
+now survives an apply.
+
+**The values are deliberately not chosen here.** They belong to the
+subscription rather than to the code, and the shipped defaults stay at
+the most conservative paid tier: a process that silently runs ten times
+too fast against a plan that forbids it is a worse failure than one that
+runs slowly. `infra/deploy/README.md` §4 says what to set and why both
+must move together.
+
+Fixed in commit `a81873e`.
+
+---
+
+### H4. No path to historical price data — first setup ~12 months away — **RESOLVED**
+
+Not a bug: a missing capability, with the largest business consequence of
+anything in this register.
+
+`backfill_daily_history` takes any `start`/`end` range and has a
+checkpoint, bounded concurrency and per-symbol failure isolation. Its
+only production caller is `core/ingestion/prices.py`, which always asks
+for `trading_date - 7 days`. History therefore accumulated one day per
+day, forwards from whenever ingestion first ran.
+
+Against ARGUS's own requirements:
+
+- `core/feature_engine/spec.py`: `percentile: int = 252`.
+- `rolling_percentile_rank` returns an all-NaN column below 252 rows.
+- `core/market_state/states.py`'s CONSOLIDATION and ACCUMULATION
+  predicates both require `atr_percentile`; a NaN predicate is never true.
+- `core/lifecycle/engine.py`: a setup opens from those two states and no
+  others.
+
+**No setup could open for roughly 252 trading days.** Meanwhile the other
+three watchlists fill from about two months in and Telegram alerts go
+out, so the system looks alive while the outcome record — the thing the
+project is for — stays empty for a year.
+
+**The fix.** `infra/deploy/backfill.py`, using the existing fetcher rather
+than a new one. It resumes from the checkpoint, keys the checkpoint by
+range so 2010-2015 and 2015-2020 are two jobs, logs the request count and
+estimated minutes before spending anything, and **fetches corporate
+actions with the prices by default** — fifteen years of unadjusted
+history is G2 with a longer reach, and two extra requests per symbol
+removes the class.
+
+It refuses to start without an explicit range. Fifteen years hardcoded
+would be a spending decision this repository is not entitled to make.
+
+Module 06's historical universe construction remains out of scope, as it
+was for G2 — a separate gap, still open.
+
+Fixed in commit `a81873e`.
+
+---
+
+### H5. `X-Argus-User` bypassed authentication in production — **RESOLVED**
+
+`services/terminal/config.py` defaults `stub_identity_enabled` to True, so
+Modules 19-21's suites keep passing, and Module 22's real-auth seam kept
+that default deliberately. What nobody noticed is that `infra/deploy/asgi.py`'s
+factories passed **no config at all**:
+
+```python
+def _terminal(engine, *, security):
+    return create_app(engine, security=security)      # -> TerminalConfig(), stub on
+```
+
+And `services/intelligence/app.py` constructed a `TerminalConfig()` inline
+inside its identity dependency, so that service could not be told
+otherwise at any price.
+
+`curl -H 'X-Argus-User: <uuid>'` was therefore enough to read and delete
+another user's watchlists, from the first registration onward. No risk
+today only because `users` is empty.
+
+**A better default would not have fixed this.** A forgotten argument is
+what it was, and a default is exactly the thing that gets forgotten. So
+the service config is now *derived* from the deployment profile:
+`DeploymentProfile.allow_identity_stub` is False for staging and
+production, `build_service` constructs the config from it, and
+`check_identity_stub` refuses a stub-enabled config under a profile that
+forbids one — which catches a hand-built config too.
+
+`IntelligenceConfig` gained the field and its dependency reads it, so the
+hardcoded construction is gone.
+
+**The test asserts the outcome, not the mechanism.** A production-built
+Terminal returns 501 `IDENTITY_UNAVAILABLE` to a header naming a real
+user; a development-built one still serves it, so the affordance Modules
+19-21 rely on is intact.
+
+Fixed in commit `730bb51`.
+
+---
+
+### H6. Four raw PIT tables had no mutation guard — **RESOLVED**
+
+`sec_filings`, `insider_trades`, `institutional_ownership` and
+`pending_material_events` appear in neither `APPEND_ONLY_TABLES` nor
+`NO_DELETE_TABLES`, and migration 0017 created three of them with no
+triggers at all.
+
+All four carry the full PIT column set and are read with
+`availability_time <= as_of`, which makes each one evidence of what ARGUS
+knew at an instant — the same claim `canonical_news` makes.
+`sec_filings`'s own schema docstring even said so ("insert-only, like
+`canonical_news`") while the guard was absent. The argument that these
+were operational, recomputable data like `news_volume_signals` does not
+hold: that table has no PIT columns and is a daily projection, while
+these are raw provider facts nothing regenerates.
+
+**The test was the actual defect.** `test_installed_guards_match_declared_tables`
+compares the triggers the database has against the tables the module
+declares — two lists — so a table absent from *both* satisfied every
+assertion. That is why 0017 shipped unnoticed.
+
+**The fix.** Migration 0019 adds the triggers, and a new test starts from
+the schema rather than from a list: every table carrying the four PIT
+columns must be guarded or named in `PIT_GUARD_EXCEPTIONS` with a written
+reason. Twelve tables match today and the exceptions dict is empty.
+Verified by removing one table from the list and watching it fail.
+
+Fixed in commit `730bb51`.
+
+---
+
+### H7. Three uniqueness keys could not deduplicate — **RESOLVED**
+
+Every writer is `ON CONFLICT DO NOTHING`, because these tables are
+append-only and `DO UPDATE` would be refused by 0003's guard. That only
+works if the conflict happens.
+
+**`analyst_grades` and `insider_trades` had nullable columns in their
+keys.** Under Postgres's default rule two NULLs are never equal, so a row
+with a NULL in its key conflicts with nothing — including an identical
+copy of itself. Re-ingestion appended the same row every run, into tables
+that cannot be cleaned. Not hypothetical for `analyst_grades`: FMP's
+field names there are unverified and `translate_grade` stores `None` when
+no alias resolves, so one wrong spelling meant a BREAKOUT_READY security
+accumulating its whole grade history daily, forever.
+
+Both are now `UNIQUE NULLS NOT DISTINCT`. The columns stay nullable,
+which is correct — `normalize_transaction_code` returns None for an
+unrecognised code precisely so an unknown code is never counted as a
+purchase, and a NOT NULL sentinel would be a value that lies about what
+was read.
+
+**`institutional_ownership` froze the first observation of a quarter.**
+The key was `(security_id, year, quarter)`. 13F filings arrive across the
+45 days after a quarter closes and amendments later still, all under the
+same quarter — so a first fetch that saw 120 of an eventual 340 filers
+stayed at 120 permanently, and the next quarter's comparison reported a
+215-institution exodus that never happened.
+
+**Adding `observation_time` to the key would not have fixed it**, which
+is worth recording because it was the obvious fix and the audit proposed
+it. That column is derived here from the quarter end plus the 45-day
+deadline, so it is identical for every fetch of a quarter however many
+times the figures change. The key needs to distinguish "the same numbers
+again" from "different numbers later", and only the numbers can:
+`content_fingerprint`, a stable hash of the figures ARGUS reads, resolved
+through the same `FIELD_ALIASES` as everything else.
+
+`observation_time` was corrected in the same change to the later of the
+deadline and the fetch instant. The deadline stays a floor because
+nothing is public before it; the fetch instant is the rest, because a
+revision seen in March was not knowable in February and saying otherwise
+is the same leak from the other side.
+
+`latest_two_quarters` collapses revisions to one row per quarter — without
+that it would have compared a quarter against an earlier version of
+itself and reported the difference as a change in ownership.
+
+Fixed in commit `730bb51`.
+
+---
+
+### H8. Split ratios were read from fixed field names, and skipped in silence — **RESOLVED**
+
+Splits were the last FMP field group in the codebase read from hardcoded
+key names. Every other one — bankruptcy, insider, 13F, the Terminal's
+Ultimate data — goes through an alias table, because the field names were
+assembled from documentation rather than verified against a live key.
+
+Splits carried the same risk with a worse consequence. An unresolved
+analyst grade is a missing panel; an unresolved split is a *wrong price
+series*, and G2's own text describes what that costs: an unadjusted
+2-for-1 is a −50% single-bar excursion recorded as a catastrophic failure
+of a setup that succeeded.
+
+And it was silent. `core/feature_engine/panel.py`:
+
+```python
+ratio = _split_ratio(row.details)
+if ratio is None:
+    continue          # no log, no counter, nothing
+```
+
+while `data/normalization/adjustments.py` reported the identical case
+through `report.skip(...)`. One rule, two implementations, disagreeing
+about whether anyone should be told.
+
+**The fix.** One implementation with an alias table
+(`SPLIT_FIELD_ALIASES`, including a combined `splitRatio` fallback), and
+the skip is logged with a count of unresolved splits, the securities
+affected, and the spellings tried.
+
+**The reporting matters more than the aliases**, and the fix is ordered
+that way on purpose: the alias list is still a guess, so an incomplete
+list plus a visible counter is a problem found on day one, while a
+complete-looking list and silence is a problem found in a backtest months
+later.
+
+Fixed in commit `730bb51`.
+
+---
+
 ## Summary
 
 | Severity | Open | Deferred | Closed |
@@ -828,7 +1178,24 @@ Fixed in commit `66a343e`.
 | HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3, H1-H8 |
+
+**The H series was found by a pre-key audit at `d8d5337`** and none of it
+appeared in any module report. Two patterns run through it and are worth
+carrying forward:
+
+*Working code with no caller* accounts for H1, H2 and H4 — and G2 before
+them. In each case every piece was written, tested and correct, and
+nothing invoked it. A unit test cannot see this, because a unit test is
+itself a caller. The check that does see it is asking, of any capability:
+*what in production calls this?*
+
+*A guard comparing two lists cannot see something absent from both.*
+H6's append-only drift test had exactly that shape and passed while three
+tables went unguarded across two migrations. Its replacement starts from
+the schema instead — which is the general fix: derive the expected set
+from the thing being protected, not from a second list somebody maintains
+by hand.
 
 **Three entries here appear in no module report:** A2's Module 11 occurrence,
 A3's structural-test gap, and A4's registry-scan blind spot. All three were
