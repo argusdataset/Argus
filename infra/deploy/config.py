@@ -111,6 +111,21 @@ class DeploymentProfile:
     #: rate-limit store. See the module docstring.
     require_shared_rate_store_for_multiprocess: bool = False
 
+    #: Whether `X-Argus-User` may be trusted as identity in this
+    #: environment. Module 19 shipped the header stub defaulted to True
+    #: so its own suite would keep passing, and Module 22's seam kept
+    #: that default for the same reason — which meant a deployed service
+    #: built without an explicit config trusted the header. Anyone who
+    #: knew a user's UUID could read and delete that user's watchlists.
+    #:
+    #: It is a profile field rather than a `validate()` check because the
+    #: original defect was a forgotten argument, and a check only fires
+    #: on a value somebody remembered to pass. `build_service` now
+    #: *derives* the service config from this, so production has no path
+    #: that produces a stub-enabled app — and `check_identity_stub`
+    #: below still refuses one built by hand.
+    allow_identity_stub: bool = True
+
     #: Read from the environment, because nobody can know them at
     #: authoring time.
     cors_allowed_origins: tuple[str, ...] = ()
@@ -128,6 +143,7 @@ class DeploymentProfile:
             "cors_allowed_origins": list(self.cors_allowed_origins),
             "workers": self.workers,
             "shared_rate_limit_configured": self.shared_rate_limit_url is not None,
+            "allow_identity_stub": self.allow_identity_stub,
         }
 
     def validate(self) -> None:
@@ -161,6 +177,27 @@ class DeploymentProfile:
                 "login lockout, the registration limit, the request ceiling — becomes "
                 "one global bucket a single attacker can exhaust for every user. Set "
                 "ARGUS_TRUSTED_PROXIES."
+            )
+
+    def check_identity_stub(self, enabled: bool) -> None:
+        """Refuse a service that would trust `X-Argus-User` here.
+
+        Separate from `validate()` because it takes an argument:
+        `validate()` answers "is this profile self-consistent", and this
+        answers "may this service, configured this way, run under this
+        profile". `build_service` calls it on the config it is about to
+        hand to a factory, so a hand-built config cannot slip past the
+        derivation.
+        """
+        if enabled and not self.allow_identity_stub:
+            raise ProductionMisconfigured(
+                "The X-Argus-User identity stub is enabled and this environment "
+                f"({self.environment.value}) does not permit it. The header is trusted "
+                "on sight, so any caller who learns a user's UUID becomes that user — "
+                "reading and deleting their watchlists. Module 22 provides real "
+                "sessions and they are always accepted, so turning the stub off costs "
+                "no functionality. If you are trying to run the Module 19-21 suites, "
+                "use the development profile."
             )
 
 
@@ -204,6 +241,10 @@ PROFILES: dict[Environment, DeploymentProfile] = {
         trusted_proxies=(),
         forbid_wildcard_cors=False,
         require_shared_rate_store_for_multiprocess=False,
+        # The stub stays available locally: Modules 19-21's suites are
+        # written against it, and a developer with no session issuer
+        # running would otherwise have no way in.
+        allow_identity_stub=True,
     ),
     Environment.STAGING: DeploymentProfile(
         environment=Environment.STAGING,
@@ -218,6 +259,7 @@ PROFILES: dict[Environment, DeploymentProfile] = {
         trusted_proxies=RAILWAY_PRIVATE_NETWORK,
         forbid_wildcard_cors=True,
         require_shared_rate_store_for_multiprocess=True,
+        allow_identity_stub=False,
     ),
     Environment.PRODUCTION: DeploymentProfile(
         environment=Environment.PRODUCTION,
@@ -226,6 +268,7 @@ PROFILES: dict[Environment, DeploymentProfile] = {
         trusted_proxies=RAILWAY_PRIVATE_NETWORK,
         forbid_wildcard_cors=True,
         require_shared_rate_store_for_multiprocess=True,
+        allow_identity_stub=False,
     ),
 }
 

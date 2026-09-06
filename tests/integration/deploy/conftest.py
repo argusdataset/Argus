@@ -104,3 +104,38 @@ def drop_database(admin_url: URL):  # noqa: F811
     for name in created:
         _drop(admin, name)
     admin.dispose()
+
+
+@pytest.fixture
+def make_user(deployed: Engine):
+    """A real `users` row in the database the composed services read.
+
+    Real rather than a bare UUID, for the reason Module 19's own conftest
+    gives: the identity stub resolves the header against `users` and
+    refuses an id that names nothing. A test asserting the stub is *off*
+    has to supply an id it would otherwise have accepted, or it proves
+    nothing.
+    """
+    role_id = None
+
+    def _make(label: str) -> uuid.UUID:
+        nonlocal role_id
+        with deployed.begin() as connection:
+            if role_id is None:
+                role_id = connection.execute(
+                    text("INSERT INTO roles (name) VALUES (:name) RETURNING id"),
+                    {"name": f"deploy-{uuid.uuid4()}"},
+                ).scalar_one()
+            return connection.execute(
+                text(
+                    "INSERT INTO users (email, display_name, role_id) "
+                    "VALUES (:email, :name, :role) RETURNING id"
+                ),
+                {
+                    "email": f"{label}-{uuid.uuid4()}@example.test",
+                    "name": label,
+                    "role": role_id,
+                },
+            ).scalar_one()
+
+    return _make

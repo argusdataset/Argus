@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
+from core.ownership_signals.institutional import content_fingerprint
 from data.canonical_model.exchanges import CanonicalExchange
 from data.canonical_model.records import (
     CanonicalDisclosureType,
@@ -424,16 +425,23 @@ def add_ownership_summary(connection: Connection) -> Callable[..., None]:
         data: dict[str, object] | None = None,
     ) -> None:
         observed = observed_at or available_at
+        payload = data or {}
         connection.execute(
             institutional_ownership.insert().values(
                 security_id=security_id,
                 year=year,
                 quarter=quarter,
+                # The real fingerprint: two fixture rows differing in
+                # their figures must differ here, or a test meaning to
+                # write two observations of a quarter writes one.
+                content_fingerprint=content_fingerprint(
+                    {"year": year, "quarter": quarter, **payload}
+                ),
                 event_time=observed,
                 observation_time=observed,
                 availability_time=available_at,
                 ingestion_time=available_at,
-                data=data or {},
+                data=payload,
                 lineage={"provider": "test"},
             )
         )

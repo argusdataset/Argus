@@ -259,14 +259,17 @@ AUDIT: tuple[OrderedRead, ...] = (
         table="institutional_ownership",
         ordering="year, quarter, observation_time",
         parent="security_id",
-        readers=("services.terminal.related",),
+        readers=("services.terminal.related", "core.ownership_signals.institutional"),
         safe=True,
         basis=(
-            "`uq_institutional_ownership_security_period` makes (security, year, "
-            "quarter) unique, so the first two ordering keys already identify one "
-            "row and `observation_time` never has to break a tie. It is ordered on "
-            "anyway so the query says what 'latest' means rather than relying on the "
-            "constraint staying as it is."
+            "A quarter now holds one row per observation of it — 13F filings arrive "
+            "over 45 days and amendments later still — so `observation_time` is doing "
+            "real work here rather than breaking a rare tie, and it cannot itself tie: "
+            "`uq_institutional_ownership_observation` includes it. Both readers take "
+            "the newest observation of each quarter, which is the restatement rule "
+            "`canonical_fundamentals` uses. Migration 0020 added the column to the "
+            "key; before that the first observation of a quarter was kept and every "
+            "later one discarded."
         ),
     ),
     OrderedRead(

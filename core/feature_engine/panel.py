@@ -29,9 +29,10 @@ describe structure use adjusted; features that describe tradability
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 import numpy as np
@@ -40,6 +41,35 @@ from sqlalchemy.engine import Connection
 
 from core.data_validation.bulk import load_corporate_actions_as_of, load_ohlcv_panel_as_of
 from data.canonical_model.records import CanonicalCorporateActionType, CanonicalTimeframe
+
+# One implementation of "what ratio does this split describe", shared with
+# Module 05's adjustment path. Two implementations is what let this one
+# quietly lack both the field tolerance and the reporting the other had.
+from data.normalization.translate import SPLIT_FIELD_ALIASES, split_ratio
+
+#: Standard-library logging rather than `infra.observability.logging`.
+#: That package's `__init__` reaches `core.model_validation_evaluation`,
+#: which imports this module's own package — so importing it here is a
+#: cycle. The records still flow through the configured handlers; only
+#: the convenience wrapper is skipped, the same choice
+#: `services/identity/seam.py` made for its own reasons.
+_log = logging.getLogger("argus.feature_engine.panel")
+
+
+def _resolve_ratio(details: object) -> float | None:
+    """`split_ratio` as a float, or None when the payload is unusable.
+
+    A thin adapter rather than a second implementation: Module 05 owns
+    what a split ratio *is* and this file needs it as a float for the
+    pandas arithmetic below. Returning None rather than defaulting to 1.0
+    keeps an unreadable split visible as an unadjusted series instead of
+    silently producing a discontinuity that looks like a real 75% crash.
+    """
+    if not isinstance(details, dict):
+        return None
+    ratio = split_ratio(details)
+    return None if ratio is None else float(ratio)
+
 
 #: Calendar days of slack per bar of lookback, so a window of N bars is
 #: satisfied despite weekends and holidays. Generous on purpose — loading
@@ -163,6 +193,14 @@ def build_adjustment_factors(actions: pd.DataFrame, close_raw: pd.DataFrame) -> 
     reflects it. The most recent bar keeps its raw price, so "today's
     price" stays a real number.
 
+    A split whose ratio cannot be read is **left unadjusted and logged**,
+    never skipped in silence. `data/normalization/adjustments.py` has
+    always reported the same case through `report.skip`; this side did
+    not, so one rule had two implementations that disagreed about
+    whether anyone should be told. The count is what makes a provider
+    field rename visible on its first day rather than as a puzzling
+    −50% bar months later.
+
     Splits only. Dividend adjustment is deliberately omitted here — see
     the module README; the structural features this panel feeds are
     price-shape measurements, and a dividend-adjusted series would shift
@@ -177,12 +215,21 @@ def build_adjustment_factors(actions: pd.DataFrame, close_raw: pd.DataFrame) -> 
     if splits.empty:
         return factors
 
+    unresolved: list[tuple[Any, Any]] = []
     for row in splits.itertuples():
         security_id = row.security_id
         if security_id not in factors.columns:
             continue
-        ratio = _split_ratio(row.details)
+        ratio = _resolve_ratio(row.details)
         if ratio is None:
+            # Reported, never silent. An unresolved split is not a gap in
+            # a panel — it is a price series that is wrong from the split
+            # date backwards, and Module 15 records the resulting −50%
+            # bar as a catastrophic failure of a setup that succeeded.
+            # That is issue G2's own failure mode returning without a
+            # single error message, which is how it went unnoticed for as
+            # long as it did.
+            unresolved.append((security_id, row.effective_date))
             continue
         effective = _effective_day(row.effective_date)
         # Vectorized over every date at once for this security.
@@ -190,6 +237,20 @@ def build_adjustment_factors(actions: pd.DataFrame, close_raw: pd.DataFrame) -> 
         # bar ON the effective day is correctly excluded. See `_effective_day`.
         earlier = factors.index < effective
         factors.loc[earlier, security_id] *= 1.0 / ratio
+
+    if unresolved:
+        _log.warning(
+            "split ratios could not be resolved; those series are unadjusted",
+            extra={
+                "event": "split_ratio_unresolved",
+                "unresolved_splits": len(unresolved),
+                "securities": len({str(security) for security, _date in unresolved}),
+                "effective_dates": sorted({str(date) for _security, date in unresolved}),
+                "tried": list(SPLIT_FIELD_ALIASES["numerator"])
+                + list(SPLIT_FIELD_ALIASES["denominator"])
+                + list(SPLIT_FIELD_ALIASES["ratio"]),
+            },
+        )
 
     return factors
 
@@ -215,27 +276,6 @@ def _effective_day(value: object) -> pd.Timestamp:
     if effective.tzinfo is None:
         effective = effective.tz_localize("UTC")
     return effective.normalize()
-
-
-def _split_ratio(details: object) -> float | None:
-    """New shares per old share, or None when the payload is unusable.
-
-    Returning None rather than defaulting to 1.0 keeps an unparseable
-    split visible as an unadjusted series rather than silently producing a
-    discontinuity that looks like a real 75% crash.
-    """
-    if not isinstance(details, dict):
-        return None
-    numerator, denominator = details.get("numerator"), details.get("denominator")
-    if numerator is None or denominator is None:
-        return None
-    try:
-        num, den = float(Decimal(str(numerator))), float(Decimal(str(denominator)))
-    except (ArithmeticError, ValueError):
-        return None
-    if num <= 0 or den <= 0:
-        return None
-    return num / den
 
 
 def true_range(panel: PricePanel) -> pd.DataFrame:

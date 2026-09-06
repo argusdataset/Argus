@@ -38,12 +38,22 @@ from data.normalization.identity import SecurityIdentityResolver
 from data.provider_adapters.fmp.checkpoint import JobCheckpoint
 from data.provider_adapters.fmp.fetchers import BackfillReport, FetchResult
 from data.provider_adapters.fmp.models import (
+    AnalystEstimate,
+    AnalystGrade,
     CorporateAction,
     CorporateActionKind,
     DailyBar,
+    EarningsTranscript,
+    ExecutiveCompensation,
     FetchProvenance,
     FinancialStatement,
+    InsiderTransaction,
+    InstitutionalOwnershipSummary,
     NewsArticle,
+    PriceTarget,
+    SecFiling,
+    SecurityPeerGroup,
+    TechnicalIndicatorPoint,
 )
 from infra.db.enums import MarketState
 from infra.db.schema.identity import universe_membership, universe_version
@@ -62,6 +72,11 @@ TARGET_DATE = date(2026, 3, 9)
 NEXT_DATE = date(2026, 3, 10)
 #: Late on the Tuesday, after Monday's cutoff and before Tuesday's.
 NOW = datetime(2026, 3, 10, 21, 0, tzinfo=UTC)
+
+#: The newest quarter whose 13F deadline has passed by `TARGET_DATE`.
+#: Q4 2025 closed on 31 December and its 45-day deadline fell on 14
+#: February 2026, so a run on 9 March can see it and cannot yet see Q1.
+LAST_FILED_QUARTER: tuple[int, int] = (2025, 4)
 
 LISTED_FROM = datetime(2020, 1, 1, tzinfo=UTC)
 
@@ -217,6 +232,9 @@ class FakeFetcher:
         statements_for: Callable[[str, str], list[FinancialStatement]] | None = None,
         news_for: Callable[[str], list[NewsArticle]] | None = None,
         actions_for: Callable[[str, CorporateActionKind], list[CorporateAction]] | None = None,
+        #: Symbols the bulk 8-K feed reports on. Only meaningful on
+        #: `UltimateFakeFetcher`, which is the subclass that has one.
+        filing_symbols: tuple[str, ...] = (),
         checkpoint_dir: Any = None,
         fail_after: int | None = None,
         bulk_symbols: tuple[str, ...] = (),
@@ -225,6 +243,7 @@ class FakeFetcher:
         self._statements_for = statements_for or (lambda symbol, kind: [])
         self._news_for = news_for or (lambda symbol: [])
         self._actions_for = actions_for or (lambda symbol, kind: [])
+        self._filing_symbols = filing_symbols
         self._checkpoint_dir = checkpoint_dir
         self._fail_after = fail_after
         self._bulk_symbols = bulk_symbols
@@ -237,6 +256,13 @@ class FakeFetcher:
         #: shared counter could not answer it.
         self.action_requests: list[tuple[str, CorporateActionKind]] = []
         self.bulk_requests: list[date] = []
+        #: Ultimate-plan requests, per endpoint family. These are what
+        #: the orchestrator-ordering test asserts on: the bug it guards
+        #: made all three lists stay empty on a healthy run.
+        self.insider_requests: list[str] = []
+        self.institutional_requests: list[str] = []
+        self.filing_requests: int = 0
+        self.terminal_requests: list[tuple[str, str]] = []
 
     # -- prices -------------------------------------------------------------
 
@@ -311,6 +337,221 @@ class FakeFetcher:
             + len(self.news_requests)
             + len(self.action_requests)
             + len(self.bulk_requests)
+        )
+
+
+class UltimateFakeFetcher(FakeFetcher):
+    """`FakeFetcher` plus the endpoints only the Ultimate plan serves.
+
+    A subclass rather than a flag on the base, because the thing being
+    modelled is precisely *whether the methods exist*: Module 26's
+    stages ask `hasattr` and report a clean skip when they do not. A
+    flag that blanked the methods at runtime would still leave them
+    findable on the class, so the base class would look Ultimate-capable
+    to the very check under test — which is exactly the mistake a test
+    double should not make about itself.
+    """
+
+    # -- Ultimate plan: ownership, filings, Terminal data -------------------
+
+    async def fetch_latest_8k_filings(self, *, page: int = 0, limit: int = 100):
+        """The bulk 8-K feed, which is market-wide rather than per-symbol.
+
+        Returns rows for every symbol this fetcher knows about, because
+        that is the shape of the real endpoint: one request covers the
+        market and `ingest_filings` drops the symbols outside the
+        universe.
+        """
+        self.filing_requests += 1
+        if page > 0:
+            return _result([])
+        return _result(
+            [
+                SecFiling(
+                    provenance=provenance("sec_8k_latest"),
+                    symbol=symbol,
+                    form_type="8-K",
+                    raw={
+                        "symbol": symbol,
+                        "acceptedDate": f"{TARGET_DATE.isoformat()} 16:31:00",
+                        "finalLink": "https://sec.gov/a.htm",
+                        "description": "Item 5.02 Departure of Directors",
+                    },
+                )
+                for symbol in self._filing_symbols
+            ]
+        )
+
+    async def fetch_insider_trades(self, symbol: str, *, page: int = 0, limit: int = 100):
+        self.insider_requests.append(symbol)
+        return _result(
+            [
+                InsiderTransaction(
+                    provenance=provenance("insider_trading_search"),
+                    symbol=symbol,
+                    raw={
+                        "symbol": symbol,
+                        "transactionDate": TARGET_DATE.isoformat(),
+                        "filingDate": TARGET_DATE.isoformat(),
+                        "transactionType": "P-Purchase",
+                        "reportingName": "Jane Roe",
+                        "securitiesTransacted": 1000,
+                        "price": 10.0,
+                    },
+                )
+            ]
+        )
+
+    async def fetch_institutional_ownership(
+        self, symbol: str, *, year: int | None = None, quarter: int | None = None
+    ):
+        """One 13F summary, for a quarter whose deadline has passed.
+
+        `LAST_FILED_QUARTER` rather than the caller's `year`/`quarter`,
+        because the production fetcher is called without them and FMP
+        answers with the latest quarter it holds. A payload echoing back
+        two `None`s would be rejected by `translate_institutional_ownership`
+        — correctly, since a summary with no quarter cannot be keyed —
+        and the fixture would be testing the rejection path by accident.
+        """
+        self.institutional_requests.append(symbol)
+        filed_year, filed_quarter = year or LAST_FILED_QUARTER[0], quarter or LAST_FILED_QUARTER[1]
+        return _result(
+            [
+                InstitutionalOwnershipSummary(
+                    provenance=provenance("institutional_ownership_summary"),
+                    symbol=symbol,
+                    year=filed_year,
+                    quarter=filed_quarter,
+                    raw={
+                        "symbol": symbol,
+                        "year": filed_year,
+                        "quarter": filed_quarter,
+                        "investorsHolding": 42,
+                        "numberOf13Fshares": 1_000_000,
+                        "ownershipPercent": 55.5,
+                    },
+                )
+            ]
+        )
+
+    async def fetch_analyst_estimates(
+        self, symbol: str, *, period: str = "annual", limit: int = 10
+    ):
+        self.terminal_requests.append((symbol, "estimates"))
+        return _result(
+            [
+                AnalystEstimate(
+                    provenance=provenance("analyst_estimates"),
+                    symbol=symbol,
+                    raw={"date": "2027-12-31", "estimatedEpsAvg": 4.2},
+                )
+            ]
+        )
+
+    async def fetch_price_target_consensus(self, symbol: str):
+        self.terminal_requests.append((symbol, "price_target_consensus"))
+        return _result(
+            [
+                PriceTarget(
+                    provenance=provenance("price_target_consensus"),
+                    symbol=symbol,
+                    source="consensus",
+                    raw={"targetConsensus": 210.0},
+                )
+            ]
+        )
+
+    async def fetch_price_target_summary(self, symbol: str):
+        self.terminal_requests.append((symbol, "price_target_summary"))
+        return _result(
+            [
+                PriceTarget(
+                    provenance=provenance("price_target_summary"),
+                    symbol=symbol,
+                    source="summary",
+                    raw={"lastMonthCount": 7},
+                )
+            ]
+        )
+
+    async def fetch_analyst_grades(self, symbol: str, *, limit: int = 100):
+        self.terminal_requests.append((symbol, "grades"))
+        return _result(
+            [
+                AnalystGrade(
+                    provenance=provenance("analyst_grades"),
+                    symbol=symbol,
+                    raw={
+                        "gradingCompany": "Alpha Bank",
+                        "date": TARGET_DATE.isoformat(),
+                        "action": "upgrade",
+                        "newGrade": "Buy",
+                    },
+                )
+            ]
+        )
+
+    async def fetch_executive_compensation(self, symbol: str):
+        self.terminal_requests.append((symbol, "compensation"))
+        return _result(
+            [
+                ExecutiveCompensation(
+                    provenance=provenance("executive_compensation"),
+                    symbol=symbol,
+                    raw={
+                        "year": 2025,
+                        "filingDate": "2026-02-20",
+                        "nameAndPosition": "Jane Roe, CEO",
+                        "total": 9_000_000,
+                    },
+                )
+            ]
+        )
+
+    async def fetch_stock_peers(self, symbol: str):
+        self.terminal_requests.append((symbol, "peers"))
+        return _result(
+            [
+                SecurityPeerGroup(
+                    provenance=provenance("stock_peers"),
+                    symbol=symbol,
+                    raw={"peers": ["PEER1", "PEER2"]},
+                )
+            ]
+        )
+
+    async def fetch_earnings_transcript(
+        self, symbol: str, *, year: int | None = None, quarter: int | None = None
+    ):
+        self.terminal_requests.append((symbol, "transcript"))
+        return _result(
+            [
+                EarningsTranscript(
+                    provenance=provenance("earnings_transcript"),
+                    symbol=symbol,
+                    year=2026,
+                    quarter=1,
+                    raw={"date": "2026-02-04 17:00:00", "content": "Operator: hello."},
+                )
+            ]
+        )
+
+    async def fetch_technical_indicator(
+        self, symbol: str, indicator: str, *, period_length: int = 14, timeframe: str = "1day"
+    ):
+        self.terminal_requests.append((symbol, f"indicator:{indicator}"))
+        return _result(
+            [
+                TechnicalIndicatorPoint(
+                    provenance=provenance("technical_indicator"),
+                    symbol=symbol,
+                    indicator=indicator,
+                    period_length=period_length,
+                    timeframe=timeframe,
+                    raw={"date": TARGET_DATE.isoformat(), indicator: "62.5", "value": "62.5"},
+                )
+            ]
         )
 
 

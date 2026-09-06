@@ -29,21 +29,40 @@ def at_head(fresh_engine: Engine, alembic_target) -> Engine:
     return fresh_engine
 
 
-def test_rolling_back_to_the_previous_release_is_safe(at_head: Engine):
-    """0013 and 0014 only added tables, so older code cannot notice.
+def test_the_assessment_names_exactly_the_revisions_that_touched_existing_objects(
+    at_head: Engine,
+):
+    """Additive revisions are invisible to old code; the rest are not.
 
-    The head revision is read from the database rather than written down.
-    It used to be a literal, which meant every new migration failed this
-    test for no reason connected to what the test is about — and a test
-    that has to be edited on every unrelated change is one people learn
-    to edit without reading.
+    This used to assert that a rollback to 0012 was outright safe, on
+    the grounds that everything after it only added tables. That stopped
+    being true at 0020, which drops and rebuilds three unique
+    constraints — so the assessment now reports it as blocking, which is
+    correct rather than a regression.
+
+    Asserting the *classification* instead keeps what the original test
+    was for — the mechanism works, and the head is read from the
+    database rather than written down — while staying true as
+    migrations accumulate. A new additive migration changes nothing
+    here; a new destructive one has to be named, which is the moment to
+    think about it.
+
+    The head revision is read from the database rather than written
+    down. It used to be a literal, which meant every new migration
+    failed this test for no reason connected to what the test is about —
+    and a test that has to be edited on every unrelated change is one
+    people learn to edit without reading.
     """
     head = pending_migrations(at_head).current
     assessment = assess_rollback("0012", at_head)
 
     assert assessment.current == head
-    assert assessment.code_rollback_safe
-    assert assessment.blocking == ()
+    # 0020 rebuilds three unique constraints and tightens a column.
+    assert {risk.revision for risk in assessment.blocking} == {"0020"}
+    # Everything else since 0012 only added tables, columns or triggers.
+    additive = {risk.revision for risk in assessment.revisions} - {"0020"}
+    assert additive >= {"0013", "0014", "0017", "0018", "0019"}
+    assert not assessment.code_rollback_safe
 
 
 def test_rolling_back_past_a_column_that_was_tightened_is_not_safe(at_head: Engine):
@@ -106,9 +125,18 @@ def test_a_forced_downgrade_destroys_data_rather_than_restoring_it(at_head: Engi
 def test_the_assessment_command_exits_zero_when_a_rollback_is_safe(
     at_head: Engine, alembic_target, monkeypatch
 ):
-    """Which is what makes it usable in a release script."""
+    """Which is what makes it usable in a release script.
+
+    The target is head itself: with nothing applied since, there is
+    nothing an old image could trip over. That is a thinner example than
+    this test once had — it used 0012, before 0020 made that range
+    non-additive — but it is the one that is true, and the exit code is
+    what is under test rather than which revisions are additive today.
+    """
     _configure(monkeypatch, alembic_target)
-    assert main(["0012"]) == 0
+    head = pending_migrations(at_head).current
+
+    assert main([str(head)]) == 0
 
 
 def test_the_assessment_command_exits_one_when_it_is_not(

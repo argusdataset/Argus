@@ -103,9 +103,23 @@ class IntelligenceSettings:
 class IntelligenceConfig:
     name: str = "argus-intelligence"
     settings: IntelligenceSettings = field(default_factory=IntelligenceSettings)
+    #: Trust `X-Argus-User` as identity, exactly as `TerminalConfig`'s
+    #: field of the same name does.
+    #:
+    #: It exists here because `app.py` used to construct a
+    #: `TerminalConfig()` inline, which meant this service trusted the
+    #: header and no caller could turn that off — not even the deployment
+    #: that owns the exposure decision. Real sessions are accepted either
+    #: way; this gates only the header. `infra/deploy/asgi.py` derives it
+    #: from the deployment profile, and staging and production forbid it.
+    stub_identity_enabled: bool = True
 
     def definition(self) -> dict[str, Any]:
-        return {"name": self.name, "settings": self.settings.as_dict()}
+        return {
+            "name": self.name,
+            "settings": self.settings.as_dict(),
+            "stub_identity_enabled": self.stub_identity_enabled,
+        }
 
     def content_checksum(self) -> str:
         payload = json.dumps(self.definition(), sort_keys=True, separators=(",", ":"))

@@ -16,13 +16,15 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 import sqlalchemy
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL, Connection, make_url
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 ALEMBIC_INI = os.path.join(REPO_ROOT, "infra", "db", "alembic.ini")
@@ -90,3 +92,38 @@ def engine(migrated_database: URL) -> Iterator[Engine]:
     eng = create_engine(migrated_database)
     yield eng
     eng.dispose()
+
+
+@pytest.fixture
+def connection(engine: Engine) -> Iterator[Connection]:  # noqa: F811
+    """A connection rolled back after each test.
+
+    Rollback rather than DELETE, for the reason this package exists to
+    enforce: the canonical tables are append-only, so a delete-based
+    teardown would be refused by migration 0003's own guards.
+    """
+    with engine.connect() as conn:
+        transaction = conn.begin()
+        try:
+            yield conn
+        finally:
+            transaction.rollback()
+
+
+@pytest.fixture
+def registered_security(connection: Connection) -> UUID:
+    """One security, so a keyed write has something to key on.
+
+    Uniqueness tests need a real `security_identity` row because every
+    one of these tables has a foreign key to it — a bare UUID would fail
+    on the constraint before reaching the one under test.
+    """
+    from data.canonical_model.exchanges import CanonicalExchange
+    from data.normalization.identity import SecurityIdentityResolver
+
+    return SecurityIdentityResolver(connection).register(
+        f"KEY{uuid.uuid4().hex[:6].upper()}",
+        exchange=CanonicalExchange.NASDAQ,
+        valid_from=datetime(2000, 1, 1, tzinfo=UTC),
+        name="Uniqueness Test Corp.",
+    )

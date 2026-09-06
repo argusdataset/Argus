@@ -80,6 +80,20 @@ insider_trades = Table(
     Column("lineage", JSONB, nullable=False, server_default="{}"),
     Column("data", JSONB, nullable=False, server_default="{}"),
     # Best-effort natural key: no confirmed provider id exists to key on.
+    #
+    # `NULLS NOT DISTINCT` is load-bearing rather than decorative. Three
+    # of these five columns are nullable, and under Postgres's default
+    # two NULLs are never equal — so a row whose person, code or quantity
+    # did not resolve collides with nothing, `ON CONFLICT DO NOTHING`
+    # never fires, and re-ingestion appends the same unreadable trade
+    # every single day into a table that cannot be cleaned.
+    #
+    # The columns stay nullable on purpose: `normalize_transaction_code`
+    # returns None for a code it does not recognise, deliberately, so
+    # that an unknown code is never counted as a purchase. Making them
+    # NOT NULL would force a sentinel that lies about what was read.
+    # This makes two identically-unreadable rows the same row, which is
+    # what they are.
     UniqueConstraint(
         "security_id",
         "reporting_person",
@@ -87,6 +101,7 @@ insider_trades = Table(
         "transaction_code",
         "quantity",
         name="uq_insider_trade_natural_key",
+        postgresql_nulls_not_distinct=True,
     ),
     Index("ix_insider_trades_security_time", "security_id", "event_time"),
     Index("ix_insider_trades_availability", "availability_time", "security_id"),
@@ -105,11 +120,32 @@ institutional_ownership = Table(
     ),
     Column("year", Integer, nullable=False),
     Column("quarter", Integer, nullable=False),
+    # Stable hash of the figures this summary reports. Part of the key —
+    # see the constraint below.
+    Column("content_fingerprint", Text, nullable=False),
     *pit_columns(),
     Column("lineage", JSONB, nullable=False, server_default="{}"),
     Column("data", JSONB, nullable=False, server_default="{}"),
+    # Keyed on the *figures*, not on the quarter alone and not on an
+    # instant. 13F filings arrive across the 45 days after a quarter
+    # closes and amendments (13F-HR/A) arrive later still, all under the
+    # same quarter — so a key of (security, year, quarter) froze the
+    # first observation and discarded every fuller one, and a first fetch
+    # that saw 120 of an eventual 340 filers stayed at 120 forever. The
+    # next quarter then compared against it and reported a
+    # 215-institution exodus that never happened.
+    #
+    # `observation_time` alone could not fix that: it is derived from the
+    # filing deadline, so it is identical for every fetch of a quarter.
+    # The fingerprint distinguishes the two cases the writer has to tell
+    # apart — the same numbers seen again (nothing to store) and
+    # different numbers seen later (a revision, and a new row).
     UniqueConstraint(
-        "security_id", "year", "quarter", name="uq_institutional_ownership_security_period"
+        "security_id",
+        "year",
+        "quarter",
+        "content_fingerprint",
+        name="uq_institutional_ownership_reading",
     ),
     Index("ix_institutional_ownership_security_period", "security_id", "year", "quarter"),
     comment="Raw 13F institutional-ownership summaries ingested from FMP. Never scored.",

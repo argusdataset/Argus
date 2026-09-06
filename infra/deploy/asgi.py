@@ -129,7 +129,7 @@ def build_service(name: str, *, profile: DeploymentProfile | None = None) -> Fas
 
     security = security_config_for(resolved)
     engine = build_engine(resolved)
-    app = SERVICES[name](engine, security=security)
+    app = SERVICES[name](engine, security=security, profile=resolved)
     own_liveness = serves_liveness(app)
 
     _log.info(
@@ -149,38 +149,62 @@ def build_service(name: str, *, profile: DeploymentProfile | None = None) -> Fas
     return TlsPolicyMiddleware(probed, profile=resolved)
 
 
-def _terminal(engine: Engine, *, security: Any) -> FastAPI:
+def _terminal(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     from services.terminal.app import create_app
 
-    return create_app(engine, security=security)
+    return create_app(engine, config=_terminal_config(profile), security=security)
 
 
-def _public_stats(engine: Engine, *, security: Any) -> FastAPI:
+def _terminal_config(profile: DeploymentProfile) -> Any:
+    """The Terminal's config, with identity derived from the profile.
+
+    Derived rather than defaulted. `TerminalConfig()` trusts
+    `X-Argus-User`, and this factory used to pass no config at all — so
+    every deployed Terminal accepted the header, and anyone who learned a
+    user's UUID became that user. A default nobody passed was the whole
+    defect, so the fix is to stop having a place where the argument can
+    be forgotten.
+
+    `check_identity_stub` is still called on the result: this function is
+    one line away from being edited back into a hazard, and the check is
+    what would catch that.
+    """
+    from services.terminal.config import TerminalConfig
+
+    config = TerminalConfig(stub_identity_enabled=profile.allow_identity_stub)
+    profile.check_identity_stub(config.stub_identity_enabled)
+    return config
+
+
+def _public_stats(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     from infra.deploy.public_web import mount_public_web
     from services.public_stats.app import create_app
 
     return mount_public_web(create_app(engine, security=security))
 
 
-def _intelligence(engine: Engine, *, security: Any) -> FastAPI:
+def _intelligence(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     from services.intelligence.app import create_app
+    from services.intelligence.config import IntelligenceConfig
 
-    return create_app(engine, security=security)
+    config = IntelligenceConfig(stub_identity_enabled=profile.allow_identity_stub)
+    profile.check_identity_stub(config.stub_identity_enabled)
+    return create_app(engine, config=config, security=security)
 
 
-def _identity(engine: Engine, *, security: Any) -> FastAPI:
+def _identity(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     from services.identity.app import create_app
 
     return create_app(engine, security=security)
 
 
-def _telegram(engine: Engine, *, security: Any) -> FastAPI:
+def _telegram(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     from services.telegram.app import create_app
 
     return create_app(engine, security=security)
 
 
-def _health(engine: Engine, *, security: Any) -> FastAPI:
+def _health(engine: Engine, *, security: Any, profile: DeploymentProfile) -> FastAPI:
     return create_health_app(engine, security=security)
 
 

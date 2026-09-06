@@ -346,17 +346,61 @@ def translate_news(
     )
 
 
+#: Accepted spellings for a split's ratio, tried in order.
+#:
+#: This was the last FMP field group in the codebase read from fixed key
+#: names. Every other one — bankruptcy, insider, 13F, the Terminal's
+#: Ultimate data — goes through an alias table, because the field names
+#: were assembled from documentation rather than verified against a live
+#: key. Splits carried the same risk and none of the tolerance, and the
+#: consequence was worse than elsewhere: an unresolved split is not a
+#: missing panel, it is a *wrong price series*. Issue G2's own text
+#: describes it — an unadjusted 2-for-1 reads as a −50% single bar and
+#: records a successful setup as a catastrophic failure.
+#:
+#: `splitRatio` is included because FMP is documented as returning it on
+#: some endpoints as a single number (2.0 = two new shares per old),
+#: which `split_ratio` handles as a ratio with an implied denominator.
+SPLIT_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "numerator": ("numerator", "splitNumerator", "newShares", "toFactor"),
+    "denominator": ("denominator", "splitDenominator", "oldShares", "fromFactor"),
+    #: A single combined figure, used only when the pair does not resolve.
+    "ratio": ("splitRatio", "ratio"),
+}
+
+
+def _first_present(details: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    for alias in aliases:
+        value = details.get(alias)
+        if value is not None and value != "":
+            return value
+    return None
+
+
 def split_ratio(details: dict[str, Any]) -> Decimal | None:
     """The `new shares per old share` ratio from a split's details.
 
     Returns None when the payload does not describe a usable ratio, so
     the caller can flag the action rather than silently applying a
-    factor of 1 and producing a discontinuous adjusted series.
+    factor of 1 and producing a discontinuous adjusted series. **Every
+    caller must report that None** — see `SPLIT_FIELD_ALIASES` on why a
+    silently skipped split is the most expensive kind of missing data
+    here.
+
+    The numerator/denominator pair is tried first because it is
+    unambiguous. A single `splitRatio` is accepted as a fallback and read
+    as new-per-old, which is how FMP documents it; a payload carrying
+    both takes the pair.
     """
-    numerator = details.get("numerator")
-    denominator = details.get("denominator")
+    numerator = _first_present(details, SPLIT_FIELD_ALIASES["numerator"])
+    denominator = _first_present(details, SPLIT_FIELD_ALIASES["denominator"])
+
     if numerator is None or denominator is None:
-        return None
+        combined = _first_present(details, SPLIT_FIELD_ALIASES["ratio"])
+        if combined is None:
+            return None
+        numerator, denominator = combined, 1
+
     try:
         num = Decimal(str(numerator))
         den = Decimal(str(denominator))

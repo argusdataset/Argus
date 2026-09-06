@@ -197,3 +197,128 @@ def test_the_frontend_is_reachable_over_the_liveness_and_tls_layers_too(deployed
 
     assert response.status_code == 200
     assert "strict-transport-security" in response.headers
+
+
+# --------------------------------------------------------------------------
+# The `X-Argus-User` stub, and why it is a profile field
+#
+# Module 19 shipped `stub_identity_enabled=True` so its own suite would
+# pass, and Module 22's real-auth seam kept that default deliberately for
+# the same reason. What nobody noticed is that `asgi.py`'s factories
+# passed no config at all, so every *deployed* Terminal and Intelligence
+# took the default and trusted the header — and `services/intelligence`
+# constructed a `TerminalConfig()` inline, so it could not be turned off
+# from outside at any price.
+#
+# `curl -H 'X-Argus-User: <uuid>'` was therefore enough to read and
+# delete another user's watchlists, the moment a first user existed.
+#
+# The fix is not a better default. A default is exactly what was
+# forgotten, so the config is now *derived* from the deployment profile
+# and production has no path that produces a stub-enabled app. These
+# tests assert the outcome rather than the mechanism: a production-built
+# service refuses the header.
+# --------------------------------------------------------------------------
+
+
+def test_a_production_terminal_refuses_the_identity_header(deployed: Engine, make_user):
+    """The vulnerability, asserted from the outside.
+
+    A real user id in `X-Argus-User` — the exact request that used to be
+    served as that user — must not reach their watchlists. 501 is the
+    right refusal and `errors.py` explains why: the caller reached for a
+    mechanism this deployment does not offer, which is not their fault.
+    """
+    user_id = make_user("victim")
+    profile = PROFILES[Environment.PRODUCTION]
+
+    with TestClient(
+        build_service("terminal", profile=profile), base_url="https://api.argus.test"
+    ) as client:
+        response = client.get("/terminal/watchlists", headers={"X-Argus-User": str(user_id)})
+
+    assert response.status_code == 501
+    assert response.json()["error"]["code"] == "IDENTITY_UNAVAILABLE"
+
+
+def test_a_development_terminal_still_accepts_it(deployed: Engine, make_user):
+    """The stub is a development affordance and stays one.
+
+    Without this the fix could be "turn it off everywhere", which would
+    break Modules 19-21's suites and leave a developer with no way in
+    until a session issuer is running locally.
+    """
+    user_id = make_user("developer")
+
+    with TestClient(build_service("terminal")) as client:
+        response = client.get("/terminal/watchlists", headers={"X-Argus-User": str(user_id)})
+
+    assert response.status_code == 200
+
+
+def test_a_production_intelligence_does_not_trust_the_header_either(deployed: Engine, make_user):
+    """The service that hardcoded `TerminalConfig()`.
+
+    Its user is optional — no route there is personalised yet — so the
+    observable difference is not a refusal but *who the request is*. The
+    config it carries is the assertion available today, and it is the
+    thing that was impossible to change before.
+    """
+    profile = PROFILES[Environment.PRODUCTION]
+    app = build_service("intelligence", profile=profile)
+
+    assert _service_config(app).stub_identity_enabled is False
+
+
+@pytest.mark.parametrize("name", ["terminal", "intelligence"])
+def test_no_identity_bearing_service_enables_the_stub_in_production(deployed: Engine, name: str):
+    """Both services, one assertion, so a third one added later is noticed."""
+    app = build_service(name, profile=PROFILES[Environment.PRODUCTION])
+
+    assert _service_config(app).stub_identity_enabled is False
+
+
+@pytest.mark.parametrize("name", ["terminal", "intelligence"])
+def test_a_hand_built_stub_config_is_refused_under_a_production_profile(
+    deployed: Engine, name: str
+):
+    """The derivation is the fix; this is the guard behind it.
+
+    `_terminal_config` is one edit away from being a hazard again, so
+    `check_identity_stub` refuses a stub-enabled config under a profile
+    that forbids it — wherever that config came from.
+    """
+    from infra.deploy.config import ProductionMisconfigured
+
+    with pytest.raises(ProductionMisconfigured, match="X-Argus-User"):
+        PROFILES[Environment.PRODUCTION].check_identity_stub(True)
+
+
+#: The attribute each composition layer keeps its inner app under. Both
+#: spellings appear — Starlette's own middlewares use `app`, ARGUS's two
+#: pure-ASGI ones use `_app` — so unwrapping tries both rather than
+#: assuming a depth, which is `asgi.py`'s to change.
+_INNER_APP_ATTRS = ("_app", "app")
+
+
+def _service_config(app):
+    """The config object a composed service is actually running on.
+
+    `build_service` returns the TLS middleware wrapping liveness wrapping
+    the FastAPI app, so the config is several layers down. Walks in
+    rather than indexing, and fails loudly if it cannot get there — a
+    helper that silently returned the wrong object would make every
+    assertion below meaningless.
+    """
+    seen = app
+    for _ in range(10):
+        if hasattr(seen, "state") and hasattr(seen.state, "config"):
+            return seen.state.config
+        for attr in _INNER_APP_ATTRS:
+            inner = getattr(seen, attr, None)
+            if inner is not None and inner is not seen:
+                seen = inner
+                break
+        else:  # pragma: no cover - only reachable if composition changes
+            raise AssertionError(f"could not reach the service config from {app!r}")
+    raise AssertionError(f"composition nested deeper than expected from {app!r}")

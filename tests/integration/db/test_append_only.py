@@ -338,3 +338,112 @@ def test_migration_0018_tables_refuse_a_truncate(engine: Engine, table: str):
 
     with pytest.raises(REJECTED), engine.begin() as conn:
         conn.execute(text(f"TRUNCATE TABLE {table}"))
+
+
+# --------------------------------------------------------------------------
+# Completeness: the drift test's blind spot, closed
+#
+# `test_installed_guards_match_declared_tables` above compares the
+# triggers the database has against the tables `append_only.py` declares.
+# Both sides are lists, so a table missing from *both* satisfies it —
+# which is exactly what happened. Migration 0017 created `sec_filings`,
+# `insider_trades` and `institutional_ownership` with no triggers and
+# added them to no list, and every assertion still passed.
+#
+# The test below starts from the schema instead. Any table carrying the
+# full PIT column set is, by that fact, a record of what ARGUS knew at an
+# instant, and must be guarded — or be named in `PIT_GUARD_EXCEPTIONS`
+# with a reason somebody wrote down. Omission stops being an option.
+# --------------------------------------------------------------------------
+
+#: The four columns that together make a table a point-in-time record.
+#: `infra/db/metadata.py`'s `pit_columns()` emits exactly these, so a
+#: table carrying all four was built as PIT evidence whatever else it is.
+PIT_COLUMNS = frozenset({"event_time", "observation_time", "availability_time", "ingestion_time"})
+
+
+def _pit_tables() -> set[str]:
+    import infra.db.schema  # noqa: F401 - registers every table on the metadata
+    from infra.db.metadata import metadata
+
+    return {
+        table.name for table in metadata.tables.values() if set(table.columns.keys()) >= PIT_COLUMNS
+    }
+
+
+def test_every_point_in_time_table_is_guarded():
+    """The check that would have caught the 0017 gap on the day it landed.
+
+    A PIT table is one ARGUS reads with `availability_time <= as_of` to
+    answer "what was knowable then". An `UPDATE` on one does not lose a
+    row, it rewrites that answer — and every historical claim computed
+    from it afterwards becomes uncheckable.
+
+    Failing here means one of two things and both need a decision: either
+    add the table to `APPEND_ONLY_TABLES` and write the migration, or add
+    it to `PIT_GUARD_EXCEPTIONS` with the reason it is genuinely
+    different. What it must not be is neither.
+    """
+    from infra.db.append_only import (
+        APPEND_ONLY_TABLES,
+        NO_DELETE_TABLES,
+        PIT_GUARD_EXCEPTIONS,
+    )
+
+    guarded = set(APPEND_ONLY_TABLES) | set(NO_DELETE_TABLES)
+    unguarded = _pit_tables() - guarded - set(PIT_GUARD_EXCEPTIONS)
+
+    assert unguarded == set(), (
+        f"these tables carry PIT columns and no mutation guard: {sorted(unguarded)}. "
+        "Add them to APPEND_ONLY_TABLES with a migration, or name them in "
+        "PIT_GUARD_EXCEPTIONS with the reason they are different."
+    )
+
+
+def test_the_predicate_finds_the_tables_it_is_supposed_to_find():
+    """A guard on a predicate that matched nothing would pass forever.
+
+    The assertion above is a subtraction, so it is trivially satisfied by
+    an empty left-hand side — a renamed PIT column, a metadata import
+    that stopped registering, and the whole check silently becomes a
+    tautology. This is the second half: the scan really does see the
+    canonical tables everyone knows are PIT records.
+    """
+    found = _pit_tables()
+
+    assert {"canonical_ohlcv", "canonical_fundamentals", "canonical_news"} <= found
+    # Every table the audit named, now included by the same predicate
+    # that missed nothing about them before — they were always PIT
+    # tables; only the guard was absent.
+    assert {
+        "sec_filings",
+        "insider_trades",
+        "institutional_ownership",
+        "pending_material_events",
+    } <= found
+
+
+def test_an_exception_must_carry_a_reason():
+    """`PIT_GUARD_EXCEPTIONS` is a dict rather than a tuple on purpose.
+
+    An exception list of bare names accumulates entries nobody can
+    justify later. Requiring a value makes the justification part of
+    adding one, and this asserts the values are real sentences rather
+    than empty strings put there to satisfy the type.
+    """
+    from infra.db.append_only import PIT_GUARD_EXCEPTIONS
+
+    for table, reason in PIT_GUARD_EXCEPTIONS.items():
+        assert reason.strip(), f"{table} is excepted with no reason given"
+
+
+@pytest.mark.parametrize("table", ["sec_filings", "insider_trades", "institutional_ownership"])
+def test_migration_0019_tables_refuse_a_truncate(engine: Engine, table: str):
+    """The guard 0019 installed, firing in the database.
+
+    TRUNCATE rather than UPDATE because it is statement-level and needs
+    no row to fire, which keeps this independent of what these tables
+    happen to contain.
+    """
+    with pytest.raises(REJECTED), engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE TABLE {table}"))

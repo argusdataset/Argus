@@ -214,6 +214,23 @@ async def run_daily_ingestion(
 
     readiness = _readiness(engine, trading_date, as_of, universe_version_id)
 
+    # One tier decision, taken once, before anything writes to the
+    # refresh log — and the ordering is load-bearing rather than tidy.
+    #
+    # `refresh_due_securities` stamps `deep_refresh_log.refreshed_on`
+    # with this run's own trading date for every security it refreshes,
+    # and `tiers.decide` answers ALREADY_REFRESHED for exactly that. So
+    # a due list computed *after* the deep refresh is empty on every
+    # healthy run, and the two stages below — which are the whole reason
+    # for the Ultimate plan — silently fetched nothing. See
+    # `tests/integration/ingestion/test_stage_ordering.py`.
+    #
+    # Computing it once is also what the tier decision was always for:
+    # three stages on one cadence should share one answer, not ask the
+    # same question three times and get different answers depending on
+    # who ran first.
+    due = _due_for_refresh(engine, members, trading_date=trading_date, config=resolved)
+
     deep = await refresh_due_securities(
         engine,
         source,
@@ -228,6 +245,7 @@ async def run_daily_ingestion(
         engine,
         source,
         members=members,
+        due=due,
         trading_date=trading_date,
         config=resolved,
         max_concurrency=settings.providers.fmp_max_concurrency,
@@ -236,7 +254,7 @@ async def run_daily_ingestion(
     terminal_data = await _ingest_terminal_data(
         engine,
         source,
-        members=members,
+        due=due,
         trading_date=trading_date,
         config=resolved,
         max_concurrency=settings.providers.fmp_max_concurrency,
@@ -262,7 +280,7 @@ async def _ingest_terminal_data(
     engine: Engine,
     source: Any,
     *,
-    members: Any,
+    due: list[Any],
     trading_date: date,
     config: IngestionConfig,
     max_concurrency: int,
@@ -273,8 +291,12 @@ async def _ingest_terminal_data(
     refresh, so analyst coverage tracks the same cadence fundamentals do.
     Nothing downstream waits on it: `core/live_scanner/readiness.py`
     checks OHLCV coverage and nothing else.
+
+    `due` is passed in rather than computed here. It has to be: the deep
+    refresh has already written this run's log rows by the time this
+    stage runs, and asking again would answer "nobody". See the note at
+    the call site.
     """
-    due = _due_for_refresh(engine, members, trading_date=trading_date, config=config)
     return await ingest_terminal_data(
         engine,
         source,
@@ -317,6 +339,7 @@ async def _ingest_ownership_data(
     source: Any,
     *,
     members: Any,
+    due: list[Any],
     trading_date: date,
     config: IngestionConfig,
     max_concurrency: int,
@@ -329,15 +352,16 @@ async def _ingest_ownership_data(
     price pull it must not be allowed to spend the margin the scanner
     depends on.
 
-    Which securities are "due" is Module 26's own tier decision, read from
-    the same `market_state` projection and the same refresh log the
-    fundamentals refresh reads, so the two cadences cannot drift apart.
+    Which securities are "due" is Module 26's own tier decision, taken
+    once for the whole run and passed in — it cannot be computed here,
+    because the deep refresh has already logged this run by now. The 8-K
+    feed above is unaffected: it is one market-wide request rather than a
+    per-security one, so no tier gates it.
     """
     outcome = OwnershipIngestReport(trading_date=trading_date)
 
     await ingest_filings(engine, source, members=members, trading_date=trading_date, report=outcome)
 
-    due = _due_for_refresh(engine, members, trading_date=trading_date, config=config)
     return await ingest_ownership(
         engine,
         source,

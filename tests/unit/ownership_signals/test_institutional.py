@@ -223,12 +223,91 @@ def test_a_quarters_holdings_are_not_knowable_until_the_filing_deadline():
     thresholds = OwnershipThresholds()
 
     assert stored.pit.event_time.date() == date(2026, 6, 30)
-    # Knowable 45 days later, not on the day the quarter closed.
+    # Knowable 45 days later at the earliest, not on the day the quarter
+    # closed. `>=` rather than `==`: the deadline is a floor, and a fetch
+    # that happens after it observes the quarter *then* — a revision seen
+    # in September was not knowable in August. Equality here would be
+    # asserting the implementation rather than the guarantee, and would
+    # make the honest late-observation case look like a regression.
     assert stored.pit.availability_time.date() >= date(2026, 8, 14)
     assert stored.pit.availability_time > stored.pit.event_time
     assert (
         stored.pit.availability_time - stored.pit.event_time
-    ).days == thresholds.institutional_availability_lag.days
+    ).days >= thresholds.institutional_availability_lag.days
+
+
+def test_a_quarter_observed_long_after_its_deadline_is_observed_then():
+    """The other half of the 45-day rule, and the half that was missing.
+
+    The deadline is a floor on when a quarter *can* be known, not a claim
+    about when this particular reading was. Filings keep arriving across
+    those 45 days and amendments arrive later still, so a fetch in
+    September saw figures that did not exist in August — stamping them
+    with the August deadline would say ARGUS could have known a number
+    before it was filed, which is the same leak the floor exists to
+    prevent, pointing the other way.
+    """
+    stored = translate_institutional_ownership(_summary(2026, 2), uuid4())
+
+    # Q2 2026 closed on 30 June; the deadline was 14 August; the fetch
+    # was on 4 September.
+    assert stored.pit.observation_time == FETCHED_AT
+
+
+def test_a_quarter_fetched_before_its_deadline_still_waits_for_it():
+    """The floor holds when the fetch is early.
+
+    A provider that returns a quarter's partial figures before the filing
+    window closes must not make them readable early — the floor is what
+    stops a backtest seeing accumulation six weeks before anyone could
+    have.
+    """
+    early = InstitutionalOwnershipSummary(
+        provenance=FetchProvenance(
+            endpoint="institutional_ownership_summary",
+            url_path="/stable/institutional-ownership/symbol-positions-summary",
+            fetched_at=datetime(2026, 7, 5, tzinfo=UTC),
+        ),
+        symbol="TEST",
+        year=2026,
+        quarter=2,
+        raw={"investorsHolding": 10},
+    )
+
+    stored = translate_institutional_ownership(early, uuid4())
+
+    assert stored.pit.observation_time.date() >= date(2026, 8, 14)
+
+
+def test_the_same_figures_fingerprint_the_same_and_changed_ones_do_not():
+    """What makes the row key able to tell a re-fetch from a revision.
+
+    Two fetches of a quarter carry different `fetched_at` values, so the
+    observation instant cannot answer "is this the same fact". The
+    figures can, and this is the property the uniqueness key rests on.
+    """
+    first = translate_institutional_ownership(_summary(2026, 2, investorsHolding=120), uuid4())
+    again = translate_institutional_ownership(_summary(2026, 2, investorsHolding=120), uuid4())
+    revised = translate_institutional_ownership(_summary(2026, 2, investorsHolding=340), uuid4())
+
+    assert first.fingerprint == again.fingerprint
+    assert first.fingerprint != revised.fingerprint
+
+
+def test_a_field_outside_the_figures_does_not_look_like_a_revision():
+    """A provider echoing a request id must not create a row a day.
+
+    `FINGERPRINTED_FIELDS` covers the figures ARGUS reads and nothing
+    else, so noise in the payload changes no key — which is the
+    difference between a table that grows when the facts change and one
+    that grows because the provider is chatty.
+    """
+    plain = translate_institutional_ownership(_summary(2026, 2, investorsHolding=120), uuid4())
+    chatty = translate_institutional_ownership(
+        _summary(2026, 2, investorsHolding=120, requestId="abc-123"), uuid4()
+    )
+
+    assert plain.fingerprint == chatty.fingerprint
 
 
 def test_the_lag_is_not_applied_twice():

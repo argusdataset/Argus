@@ -121,6 +121,7 @@ def get_config(request: Request) -> IntelligenceConfig:
 def optional_user(
     request: Request,
     connection: Annotated[Connection, Depends(get_connection)],
+    config: Annotated[IntelligenceConfig, Depends(get_config)] = None,  # type: ignore[assignment]
     x_argus_user: Annotated[str | None, Header(alias=USER_HEADER)] = None,
 ) -> UUID | None:
     """Who is asking, when they said. None when they did not.
@@ -134,14 +135,24 @@ def optional_user(
     if not x_argus_user and not authorization:
         return None
 
-    from services.terminal.config import TerminalConfig
     from services.terminal.errors import TerminalError
 
     try:
         return current_user_id(
             connection,
             x_argus_user,
-            config=TerminalConfig(),
+            # This service's own config, through the dependency rather
+            # than a freshly constructed `TerminalConfig()`. The old
+            # inline construction meant the header stub was on here
+            # whatever the deployment said, and no argument anyone could
+            # pass would turn it off.
+            #
+            # A default of None keeps the signature callable directly —
+            # `tests/integration/identity/test_seam.py` invokes this
+            # dependency with a bare request stub to prove both services
+            # resolve a session through one function — and the fallback
+            # below is what that call gets.
+            config=config or IntelligenceConfig(),
             authorization=authorization,
         )
     except TerminalError:

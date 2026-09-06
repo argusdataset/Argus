@@ -103,7 +103,31 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     # reasoning as login_attempts, applied to registration: a per-source
     # signup limit clearable by deleting its own evidence is not a limit.
     "registration_attempts",
+    # Added in migration 0019, having been missed when the tables
+    # themselves were created (0017, and `pending_material_events`
+    # earlier still). All four carry the full PIT column set and are read
+    # with `availability_time <= as_of`, which makes them evidence of
+    # what ARGUS knew at an instant — the same claim `canonical_news`
+    # makes, and `sec_filings`'s own docstring already said so
+    # ("insert-only, like canonical_news") while the guard was absent.
+    #
+    # The argument that they were "operational, recomputable" data like
+    # `news_volume_signals` does not hold: that table has no PIT columns
+    # at all and is a daily projection, while these are raw provider
+    # facts nothing regenerates.
+    "sec_filings",
+    "insider_trades",
+    "institutional_ownership",
+    "pending_material_events",
 )
+
+#: Tables carrying the full PIT column set that are deliberately *not*
+#: append-only. Empty, and the emptiness is the point: the completeness
+#: test in `tests/integration/db/test_append_only.py` requires every PIT
+#: table to be guarded or to be named here with a reason. An exception
+#: has to be argued in code rather than achieved by omission — which is
+#: how the four above went unguarded for two migrations.
+PIT_GUARD_EXCEPTIONS: dict[str, str] = {}
 
 #: Reject DELETE and TRUNCATE, but allow UPDATE.
 NO_DELETE_TABLES: tuple[str, ...] = (

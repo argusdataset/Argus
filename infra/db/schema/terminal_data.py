@@ -160,8 +160,21 @@ analyst_grades = Table(
     Column("lineage", JSONB, nullable=False, server_default="{}"),
     # One firm, one action, one instant. Two firms acting on the same day
     # are two rows, which a snapshot-shaped key could not represent.
+    #
+    # `NULLS NOT DISTINCT` because `new_grade` is nullable and its field
+    # name is unconfirmed (see the module docstring). If FMP spells it
+    # something outside `FIELD_ALIASES`, every grade stores a NULL — and
+    # under Postgres's default NULL-distinct rule, `ON CONFLICT DO
+    # NOTHING` would then never fire, so a security refreshed daily would
+    # accumulate its whole grade history again every day, permanently,
+    # in an append-only table.
     UniqueConstraint(
-        "security_id", "grading_company", "event_time", "new_grade", name="uq_analyst_grade_action"
+        "security_id",
+        "grading_company",
+        "event_time",
+        "new_grade",
+        name="uq_analyst_grade_action",
+        postgresql_nulls_not_distinct=True,
     ),
     Index("ix_analyst_grades_lookup", "security_id", "availability_time"),
     comment="Analyst rating changes, one row per firm per action. An event stream.",

@@ -104,6 +104,8 @@ def add_trade(connection: Connection) -> Callable[..., None]:
 @pytest.fixture
 def add_quarter(connection: Connection) -> Callable[..., None]:
     """Write one `institutional_ownership` row for a given quarter."""
+    from core.ownership_signals.institutional import content_fingerprint
+
     thresholds = OwnershipThresholds()
 
     def _add(
@@ -136,6 +138,11 @@ def add_quarter(connection: Connection) -> Callable[..., None]:
                 security_id=security_id,
                 year=year,
                 quarter=quarter,
+                # The real fingerprint, from the module that computes it
+                # — not a stub. Two fixture rows that differ in their
+                # figures must differ here too, or a test that means to
+                # write two observations of a quarter silently writes one.
+                content_fingerprint=content_fingerprint({"year": year, "quarter": quarter, **data}),
                 event_time=ends,
                 observation_time=knowable,
                 availability_time=knowable,

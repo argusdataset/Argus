@@ -54,6 +54,8 @@ pattern, for the same reason.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -81,6 +83,7 @@ __all__ = [
     "OwnershipQuarter",
     "StoredOwnership",
     "assess_institutional_batch",
+    "content_fingerprint",
     "evaluate_institutional_trend",
     "latest_two_quarters",
     "quarter_end",
@@ -119,6 +122,38 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Concepts the fingerprint covers: the figures ARGUS actually reads.
+#:
+#: Not the whole payload. A provider that echoes a request id or a
+#: generated-at timestamp would make every fetch look like a revision,
+#: and the table would grow daily for no change in the facts. These are
+#: the fields any downstream reading depends on, so a change in one of
+#: them is a change worth a new row and a change outside them is not.
+FINGERPRINTED_FIELDS: tuple[str, ...] = (
+    "year",
+    "quarter",
+    "investors_holding",
+    "investors_holding_change",
+    "total_shares",
+    "ownership_percent",
+)
+
+
+def content_fingerprint(payload: dict[str, Any]) -> str:
+    """A stable hash of the figures a 13F summary reports.
+
+    Resolved through `FIELD_ALIASES` rather than read from fixed keys, so
+    a provider renaming a field changes which alias resolves and not the
+    fingerprint — the same tolerance the rest of this module has.
+    """
+    resolved = {}
+    for concept in FINGERPRINTED_FIELDS:
+        value, _key = resolve_field(payload, concept)
+        resolved[concept] = None if value is None else str(value)
+    canonical = json.dumps(resolved, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class OwnershipTranslationError(ValueError):
     """A 13F summary cannot be stored without inventing which quarter it is.
 
@@ -150,6 +185,11 @@ class StoredOwnership:
 
     security_id: UUID
     period: OwnershipQuarter
+    #: Stable hash of the figures this summary reports. Part of the row
+    #: key — see `translate_institutional_ownership` on why the quarter
+    #: and an instant are not enough to say whether two fetches are the
+    #: same fact.
+    fingerprint: str
     pit: PitTimestamps
     lineage: dict[str, Any]
     data: dict[str, Any]
@@ -246,11 +286,28 @@ def translate_institutional_ownership(
     a missing one.
 
     `event_time` is the quarter end — the period these holdings describe.
-    `observation_time` and `availability_time` are that plus the 45-day
-    filing deadline, because nothing about this quarter is public until
-    managers have filed. Unlike a news article, the event and its
-    observability are six weeks apart, and collapsing them is the leak
-    this module most needed to avoid.
+
+    `observation_time` is **the later of the 45-day filing deadline and
+    the fetch instant**, and both halves of that matter:
+
+    - The deadline is a floor. Nothing about a quarter is public until
+      managers have filed, so treating the quarter end as observable
+      would hand a backtest six weeks of hindsight — the leak this
+      module most needed to avoid.
+    - The fetch instant is the rest of it. 13F filings keep arriving
+      across those 45 days and amendments arrive later still, so the
+      figures seen in March were *not* knowable in February. Stamping a
+      March revision with the February deadline would claim ARGUS could
+      have known a number that did not exist yet, which is the same leak
+      from the other direction.
+
+    `content_fingerprint` is what makes those two compatible. Keying on
+    the *figures* rather than on the observation instant means a
+    re-fetch that sees the same numbers conflicts and writes nothing —
+    however much later it happened — while a genuinely revised filing is
+    a new row with a later observation. Without it, either every daily
+    re-fetch would duplicate the quarter, or the first observation of it
+    would be frozen forever. The table had the second problem.
     """
     resolved_thresholds = thresholds or OwnershipThresholds()
     payload = dict(summary.raw)
@@ -273,11 +330,15 @@ def translate_institutional_ownership(
 
     period = OwnershipQuarter(int(year), int(quarter))
     ends = datetime.combine(quarter_end(period), time.max, tzinfo=UTC)
-    knowable = ends + resolved_thresholds.institutional_availability_lag
+    deadline = ends + resolved_thresholds.institutional_availability_lag
+    # The later of the deadline and the fetch. See the docstring: the
+    # deadline is a floor, not the answer.
+    knowable = max(deadline, summary.provenance.fetched_at)
 
     return StoredOwnership(
         security_id=security_id,
         period=period,
+        fingerprint=content_fingerprint(payload),
         pit=PitTimestamps.derive(
             event_time=ends,
             observation_time=knowable,
@@ -302,11 +363,28 @@ def write_institutional_ownership(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> WriteResult:
-    """Insert-only, idempotent on `(security_id, year, quarter)`.
+    """Insert-only, idempotent on `(security_id, year, quarter, content_fingerprint)`.
 
-    A quarter re-fetched later inserts nothing: 13F figures for a closed
-    quarter do not change, and the ones that do (a late or amended filing)
-    arrive as a different quarter's row rather than as an edit to this one.
+    **A quarter genuinely does change after it closes**, and an earlier
+    version of this docstring claimed otherwise. 13F filings arrive
+    across the 45 days following a quarter end and amendments (13F-HR/A)
+    arrive later still, all reported under that same quarter. A key
+    without `observation_time` therefore kept whichever version was
+    fetched first and silently discarded every later, fuller one — so a
+    security first seen with 120 of an eventual 340 filers would stay at
+    120 forever, and the next quarter's comparison would report a
+    215-institution exodus that never happened.
+
+    With the figures' fingerprint in the key, each fetch that sees
+    something *different* becomes a new row and the reader takes the
+    newest observation of each quarter — the same restatement rule
+    `canonical_fundamentals` has always used. Re-fetching an unchanged
+    quarter still inserts nothing, whenever it happens.
+
+    The fingerprint rather than `observation_time` alone, because the
+    observation instant does not distinguish the two cases on its own:
+    it is the same for two fetches of a quarter before the fix, and
+    different for two *identical* fetches after it.
     """
     result = WriteResult(offered=len(rows))
     if not rows:
@@ -317,6 +395,7 @@ def write_institutional_ownership(
             "security_id": row.security_id,
             "year": row.period.year,
             "quarter": row.period.quarter,
+            "content_fingerprint": row.fingerprint,
             **row.pit.as_columns(),
             "lineage": row.lineage,
             "data": row.data,
@@ -331,7 +410,7 @@ def write_institutional_ownership(
         statement = (
             insert(institutional_ownership)
             .values(batch)
-            .on_conflict_do_nothing(constraint="uq_institutional_ownership_security_period")
+            .on_conflict_do_nothing(constraint="uq_institutional_ownership_reading")
             .returning(institutional_ownership.c.id)
         )
         result.inserted += len(connection.execute(statement).fetchall())
@@ -356,6 +435,15 @@ def latest_two_quarters(
     filing window has not closed at the cutoff being asked about is not
     part of that cutoff's answer, however complete the row is now.
 
+    **One row per quarter, and that is not automatic.** Since
+    `observation_time` joined the uniqueness key, a quarter can hold
+    several rows — the original filing count and each later revision.
+    Taking the two newest *rows* would happily return two observations of
+    the same quarter and compare it against itself, producing a change of
+    zero or, worse, of whatever the revision added. So revisions are
+    collapsed first: newest observation per quarter, then the two newest
+    quarters.
+
     One query for every security. Ordering and slicing happen here rather
     than in SQL because "two per group" is a window function whose cost
     and readability are both worse than reading a few extra rows for a
@@ -379,14 +467,25 @@ def latest_two_quarters(
             institutional_ownership.c.security_id,
             institutional_ownership.c.year.desc(),
             institutional_ownership.c.quarter.desc(),
+            # Newest observation of a quarter first, so the first row
+            # seen for a quarter is the one kept below.
+            institutional_ownership.c.observation_time.desc(),
         )
     ).all()
 
     periods: dict[UUID, list[InstitutionalPeriod]] = {}
+    seen: dict[UUID, set[tuple[int, int]]] = {}
     for row in rows:
         collected = periods.setdefault(row.security_id, [])
+        quarters = seen.setdefault(row.security_id, set())
+        quarter = (row.year, row.quarter)
+        if quarter in quarters:
+            # An earlier observation of a quarter already taken. The
+            # ordering above means the one kept is the newest.
+            continue
         if len(collected) >= 2:
             continue
+        quarters.add(quarter)
         collected.append(_period_from(row))
     return periods
 
