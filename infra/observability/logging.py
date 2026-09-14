@@ -48,6 +48,30 @@ rather than silent.
 Both behaviours are correct for their medium. The shared part is the key
 list, which lives here and which Module 22's is a stricter sibling of.
 
+## The scrubber reads keys; the filter reads text. Both are needed.
+
+`scrub` decides by *field name*, which is the right question for a
+payload ARGUS builds. It cannot help with a credential that arrives
+inside a value — and that is not hypothetical. `httpx` logs every
+request it makes at INFO, passing the URL as a format argument:
+
+```
+HTTP Request: GET https://financialmodelingprep.com/stable/stock-list?apikey=<the real key>
+```
+
+`data/provider_adapters/fmp/client.py` is careful with that key — reads
+it once, holds it only in memory, redacts it out of its own errors — and
+none of that reaches a line another library emits. So the key sat in
+plaintext in Railway's log store, found by reading a deploy log.
+
+`CredentialQueryFilter` closes it at the handler, where every propagated
+record passes through: a query parameter whose *name* is credential
+shaped (the same `CREDENTIAL_KEY_PARTS` list, so one word list still
+governs everything) keeps its name and loses its value. The line itself
+survives — which matters, because that log line is how the paywall it
+recorded was diagnosed in the first place. Silencing `httpx` would have
+removed the evidence along with the leak.
+
 ## `configure_logging` claims ownership, and Alembic respects it
 
 `fileConfig` does two things beyond disabling loggers: it resets the root
@@ -66,6 +90,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -73,11 +98,13 @@ from typing import Any
 __all__ = [
     "CREDENTIAL_KEY_PARTS",
     "REDACTED",
+    "CredentialQueryFilter",
     "JsonFormatter",
     "configure_logging",
     "fields",
     "get_logger",
     "logging_is_configured",
+    "redact_query_credentials",
     "reset_logging",
     "scrub",
 ]
@@ -105,6 +132,75 @@ CREDENTIAL_KEY_PARTS: frozenset[str] = frozenset(
 )
 
 REDACTED = "[redacted]"
+
+#: A credential-shaped query parameter and its value, anchored to query
+#: position by the leading `?` or `&`. The names come from
+#: `CREDENTIAL_KEY_PARTS` rather than a second list, so a name added there
+#: is redacted out of URLs from the same moment.
+#:
+#: Anchoring to `?`/`&` is deliberate. Matching a bare `token=...`
+#: anywhere in any message would also rewrite prose, SQL and code
+#: fragments that merely mention one, and a scrubber that mangles
+#: unrelated lines gets turned off. The evidenced leak — every HTTP
+#: client that logs its request URL — is query-shaped.
+_QUERY_CREDENTIAL = re.compile(
+    r"(?i)(?P<lead>[?&][A-Za-z0-9_.\-]*"
+    r"(?:" + "|".join(sorted(CREDENTIAL_KEY_PARTS)) + r")"
+    r"[A-Za-z0-9_.\-]*=)(?P<value>[^&\s\"'<>]+)"
+)
+
+
+def redact_query_credentials(text: str) -> str:
+    """Replace credential-shaped query parameter values in one string.
+
+    Keeps the parameter name, because which credential leaked is the
+    useful half and is not itself the secret.
+    """
+    return _QUERY_CREDENTIAL.sub(lambda match: f"{match.group('lead')}{REDACTED}", text)
+
+
+class CredentialQueryFilter(logging.Filter):
+    """Strip credential-shaped query values out of records from anywhere.
+
+    Installed on the handler rather than on a logger, because a filter on
+    a logger only sees records logged *to* that logger — `callHandlers`
+    walks ancestors for their handlers and never re-applies their filters.
+    A record from `httpx`, or from any dependency added later, reaches the
+    root handler and therefore reaches this.
+
+    Rewrites `msg` and drops `args` when the rendered message changes,
+    because the URL usually arrives as a format argument rather than
+    already interpolated into the message. String-valued extras are
+    rewritten in place, since `JsonFormatter` copies those onto the line
+    too, and a leak one field over is the same leak.
+
+    Never raises. An observability layer that can take down the request it
+    is observing is worse than the leak it was added to stop, so a record
+    that cannot be rendered is passed through untouched — the formatter
+    will meet the same problem and has its own answer for it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            self._redact(record)
+        except Exception:  # noqa: BLE001 - logging must not break the caller
+            pass
+        return True
+
+    @staticmethod
+    def _redact(record: logging.LogRecord) -> None:
+        rendered = record.getMessage()
+        cleaned = redact_query_credentials(rendered)
+        if cleaned != rendered:
+            record.msg = cleaned
+            record.args = ()
+
+        for key, value in vars(record).items():
+            if key == "msg" or not isinstance(value, str):
+                continue
+            replacement = redact_query_credentials(value)
+            if replacement != value:
+                setattr(record, key, replacement)
 
 #: The keys `logging.LogRecord` already owns. A structured field colliding
 #: with one of these would be silently dropped by the stdlib, so they are
@@ -142,6 +238,7 @@ def configure_logging(
     root = logging.getLogger()
     handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(CredentialQueryFilter())
     handler.set_name("argus-json")
 
     if force:

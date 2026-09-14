@@ -12,9 +12,11 @@ import pytest
 from infra.observability.logging import (
     CREDENTIAL_KEY_PARTS,
     REDACTED,
+    CredentialQueryFilter,
     configure_logging,
     fields,
     get_logger,
+    redact_query_credentials,
     reset_logging,
     scrub,
 )
@@ -191,6 +193,74 @@ def test_the_scrubber_redacts_rather_than_raising():
     assert cleaned["password"] == REDACTED
     assert cleaned["user"] == "alice"
     assert cleaned["redacted"] == ["password"]
+
+
+# --------------------------------------------------------------------------
+# Credentials inside a value, not a field name
+# --------------------------------------------------------------------------
+
+
+def test_a_real_httpx_request_cannot_log_its_api_key(emitted):
+    """The leak as it actually happened, reproduced through httpx itself.
+
+    A deploy log on 2026-09-13 contained the live FMP key in clear, from
+    `httpx`'s own INFO line — which passes the URL as a format argument,
+    so nothing ARGUS builds or scrubs was ever involved. Asserted against
+    a real request rather than a hand-built record: the bug was in what
+    the library does, so a synthetic record would prove the wrong thing.
+    """
+    import httpx
+
+    key = f"live-{uuid4().hex}"
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(402, json={}))
+    ) as client:
+        client.get(f"https://financialmodelingprep.com/stable/stock-list?apikey={key}")
+
+    lines = emitted()
+    assert lines, "httpx still logs the request; the fix must not silence it"
+    assert key not in json.dumps(lines)
+    assert f"apikey={REDACTED}" in lines[0]["message"]
+    assert "402 Payment Required" in lines[0]["message"]
+
+
+def test_the_key_is_gone_from_a_field_value_too(emitted):
+    """`scrub` reads field names, so a URL under a harmless name is its blind spot."""
+    log = get_logger("argus.example")
+    key = f"live-{uuid4().hex}"
+
+    log.info("fetched", extra=fields(event="fetched", url=f"/stable/profile?apikey={key}"))
+
+    line = emitted()[0]
+    assert key not in json.dumps(line)
+    assert line["url"] == f"/stable/profile?apikey={REDACTED}"
+
+
+def test_an_ordinary_query_parameter_is_left_alone(emitted):
+    """A scrubber that mangles unrelated lines is a scrubber someone turns off."""
+    log = get_logger("argus.example")
+
+    log.info("fetched", extra=fields(event="fetched", url="/stable/profile?symbol=AAPL"))
+
+    assert emitted()[0]["url"] == "/stable/profile?symbol=AAPL"
+
+
+def test_every_credential_name_in_the_list_is_redacted_from_a_url():
+    """One word list governs both halves — the field scrubber and this."""
+    for part in CREDENTIAL_KEY_PARTS:
+        assert redact_query_credentials(f"https://x/y?{part}=sensitive") == (
+            f"https://x/y?{part}={REDACTED}"
+        )
+
+
+def test_the_filter_never_breaks_the_record_it_cannot_render():
+    """Observability that can crash its caller is worse than the leak."""
+    record = logging.LogRecord(
+        "httpx", logging.INFO, __file__, 0, "%s %s", ("only-one-argument",), None
+    )
+
+    assert CredentialQueryFilter().filter(record) is True
 
 
 def test_the_key_list_covers_everything_module_22_refuses():
