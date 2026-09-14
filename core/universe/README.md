@@ -155,6 +155,48 @@ equivalent version and reuses it rather than writing a duplicate; a
 genuine change — a new listing, a corrected date, a reclassification —
 produces a different checksum and therefore a new version.
 
+## The seed path, and why it is a sibling rather than an option
+
+`build_intervals_from_fetch` states the rule the production path keeps:
+one `stock-list` call for the whole universe, no per-ticker calls, no
+hardcoded symbols, no assumed count. That rule is right and is unchanged.
+
+It also turned out to be unreachable on a free FMP key.
+`/stable/stock-list` is paywalled below the paid tiers, and the first
+real run of `infra.deploy.universe` against production got HTTP 402 from
+it before reading a row — so no universe could be built, no identities
+were minted, and the targeted backfill could not run either
+(`_identities_for` resolves identities, it never mints them). Nothing
+downstream had ever executed against real data.
+
+`build_intervals_from_symbols` is the way around that: an explicit symbol
+list, one `/stable/profile` call each, which a free key can reach. It is
+a **separate function** rather than an optional argument on the real one,
+so the production path's guarantee stays literally true of the production
+path and the exception is visible in the name of what you called.
+
+Everything after the fetch is the ordinary path — `_observe_listing`,
+admission, exclusion reporting, identity registration and
+`build_intervals`, all unchanged — so a seeded universe is admitted by
+the same rules as a real one. What differs is the evidence behind it, in
+two ways that are recorded rather than glossed:
+
+- **No delisted sweep.** `delisted-companies` is very likely gated too,
+  and calling it would reintroduce the paywall this path routes around.
+  So a symbol that is in fact delisted is dated from
+  `IntervalEvidence.FIRST_OBSERVED` rather than from the delisted feed —
+  weaker evidence, which `check_valid_asset_identity` already understands
+  and `SeedReport` states in every summary.
+- **No IPO date, though the payload has one.** A profile row carries
+  `ipoDate`, which would beat the observation instant. Using it means
+  changing `_observe_listing`, which the whole-market path shares, so it
+  is kept in the record's `raw` and left unused.
+
+A seeded universe is a test fixture. Its label says so (`seed<n>`), its
+stored definition says so, and every log line about it says so, because
+every statistic computed over one describes the handful of symbols that
+were typed in rather than the market.
+
 ## What this module deliberately does not do
 
 - **No delisting reason.** FMP does not report one (Module 04's finding),

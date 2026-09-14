@@ -279,6 +279,35 @@ run would log `universe_size: 0` and exit healthy. Either build before
 14:00 UTC, or backfill price history first and rebuild, which dates the
 intervals from real bars.
 
+**On a free FMP key that command cannot build anything.**
+`/stable/stock-list` is paywalled below FMP's paid tiers — the first real
+run of this entrypoint, on 2026-09-13, got HTTP 402 from it before
+reading a row. `/stable/profile` is not paywalled, so a small universe
+can be seeded from an explicit list instead:
+
+```
+railway run --service ingestion \
+  ARGUS_UNIVERSE_SYMBOLS=MLSS,SLS,HIVE,ALXO,QBTS,AAPL,MSFT \
+  python -m infra.deploy.universe
+```
+
+One profile call per symbol, no stock-list and no delisted sweep. Unset
+the variable and the whole-market path runs exactly as before.
+
+**A seeded universe is a test fixture, not a universe**, and everything
+it produces says so: the label carries `seed<n>`
+(`universe-2026-09-14-seed7-<checksum>`), the stored definition records
+the symbols asked for, the ones FMP did not know, and that no delisted
+sweep ran. Read a scan, a score or a track record against one and it
+describes those symbols, not the market. It is for taking the pipeline
+end to end for the first time — feature vectors, candidate detection, the
+eligibility gates, market-state classification, scoring — at zero data
+cost. Build the real universe from `stock-list` once a paid key exists.
+
+The timing check above applies to a seeded build unchanged: a seeded
+universe the next ingestion cannot see fails with exit 1 exactly as a
+real one does.
+
 **Backfilling price history.** See §10.
 
 ### Tuning the FMP plan

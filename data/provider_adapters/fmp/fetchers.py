@@ -36,7 +36,7 @@ from typing import Any, Generic, TypeVar
 from data.provider_adapters.fmp import endpoints
 from data.provider_adapters.fmp.checkpoint import JobCheckpoint
 from data.provider_adapters.fmp.client import FmpClient
-from data.provider_adapters.fmp.errors import FmpError
+from data.provider_adapters.fmp.errors import FmpError, FmpProviderError
 from data.provider_adapters.fmp.models import (
     AnalystEstimate,
     AnalystGrade,
@@ -78,6 +78,34 @@ STATEMENT_ENDPOINTS = {
     # with no further wiring anywhere.
     "FINANCIAL_SCORES": endpoints.FINANCIAL_SCORES,
 }
+
+#: Accepted spellings per `SecurityListing` field in a `/stable/profile`
+#: payload, tried in order. The defensive pattern Module 09's
+#: `bankruptcy.FIELD_ALIASES` and `data/normalization/translate.py`
+#: already use, and for the same reason: FMP's documentation for this
+#: endpoint does not pin its field names, so a single wrong guess would
+#: otherwise look like a security that does not exist.
+#:
+#: `exchange` and `exchange_short_name` overlap on purpose. `stock-list`
+#: returns the long venue name under `exchange` and the short one under
+#: `exchangeShortName`; `profile` returns the long one under
+#: `exchangeFullName` and puts the *short* one under plain `exchange`. So
+#: the same key means different things in the two payloads, and listing
+#: it in both places lets `normalize_exchange` — which tries the long
+#: label, then the short — resolve the venue whichever shape arrives.
+PROFILE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "symbol": ("symbol", "ticker"),
+    "name": ("companyName", "name"),
+    "exchange": ("exchangeFullName", "exchangeLongName", "exchange"),
+    "exchange_short_name": ("exchangeShortName", "exchange"),
+    "security_type": ("type", "securityType"),
+}
+
+#: Where `fetch_company_profile` records which spelling actually
+#: resolved, inside the record's `raw`. Kept with the record rather than
+#: only logged: the run that needs it is the one being read back later,
+#: and a log line from that run may be long gone.
+PROFILE_RESOLUTION_KEY = "argus_resolved_profile_fields"
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +223,30 @@ class FmpFetcher:
         """Every symbol FMP lists. No hardcoded tickers, no fixed count."""
         body, provenance = await self._client.get(endpoints.STOCK_LIST)
         records = [self._listing(row, provenance) for row in _rows(body)]
+        return self._result(records, provenance)
+
+    async def fetch_company_profile(self, symbol: str) -> FetchResult[SecurityListing]:
+        """One symbol's profile, shaped as a listing.
+
+        Exists because `/stable/stock-list` is paywalled below FMP's paid
+        tiers and `/stable/profile` is not, which is the difference
+        between a free key that can seed a small universe and one that
+        can do nothing at all. It is a per-symbol call and therefore the
+        wrong way to build the real universe — see
+        `core.universe.builder.build_intervals_from_symbols`, the only
+        caller, on why that path is separate and labelled.
+
+        Field names are resolved through `PROFILE_FIELD_ALIASES` rather
+        than read directly. A profile row whose symbol cannot be resolved
+        under any known spelling raises instead of returning a listing
+        with an empty symbol: admission would exclude that row for an
+        unrecognised venue, and the operator would go looking for an
+        exchange problem that was never there.
+        """
+        body, provenance = await self._client.get(
+            endpoints.COMPANY_PROFILE, params={"symbol": symbol}
+        )
+        records = [self._profile_listing(row, provenance, symbol) for row in _rows(body)]
         return self._result(records, provenance)
 
     async def fetch_exchange_listings(
@@ -664,6 +716,54 @@ class FmpFetcher:
             exchange_short_name=row.get("exchangeShortName"),
             security_type=row.get("type"),
             raw=_extra(row, consumed),
+        )
+
+    @staticmethod
+    def _profile_listing(
+        row: dict[str, Any], provenance: FetchProvenance, requested: str
+    ) -> SecurityListing:
+        """A `/stable/profile` row as a `SecurityListing`, by alias.
+
+        Records which alias won per field, so an unexpected payload shape
+        is readable from the record rather than inferred from what went
+        missing downstream.
+        """
+        resolved: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        for target, aliases in PROFILE_FIELD_ALIASES.items():
+            for alias in aliases:
+                value = row.get(alias)
+                if value in (None, ""):
+                    continue
+                resolved[target] = alias
+                values[target] = value
+                break
+
+        if "symbol" not in values:
+            raise FmpProviderError(
+                f"The profile payload for {requested!r} carries no recognisable symbol "
+                f"field. Tried {', '.join(PROFILE_FIELD_ALIASES['symbol'])}; the row has "
+                f"{', '.join(sorted(row)) or 'no fields at all'}. Add the spelling FMP "
+                "actually returns to PROFILE_FIELD_ALIASES rather than letting the row "
+                "through — a listing with no symbol is excluded downstream as an "
+                "unrecognised venue, which points at the wrong problem."
+            )
+
+        consumed = {alias for aliases in PROFILE_FIELD_ALIASES.values() for alias in aliases}
+        extra = _extra(row, consumed)
+        extra[PROFILE_RESOLUTION_KEY] = {
+            "resolved": resolved,
+            "unresolved": sorted(set(PROFILE_FIELD_ALIASES) - set(resolved)),
+        }
+
+        return SecurityListing(
+            provenance=provenance,
+            symbol=str(values["symbol"]),
+            name=values.get("name"),
+            exchange=values.get("exchange"),
+            exchange_short_name=values.get("exchange_short_name"),
+            security_type=values.get("security_type"),
+            raw=extra,
         )
 
     @staticmethod

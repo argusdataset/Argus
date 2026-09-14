@@ -68,12 +68,40 @@ Two ways out, both stated in the failure message: build before 14:00 UTC,
 or ingest price history first — which dates the intervals from real bars
 instead of from the build instant, and is what
 `core/universe/README.md` means by running the backfill first.
+
+## Seeding a small universe on a free FMP key
+
+`/stable/stock-list` is paywalled below FMP's paid tiers. The first real
+attempt at this entrypoint, on 2026-09-13, got HTTP 402 on that endpoint
+before it had read a single row — so on a free key the whole-market path
+cannot build anything, and nothing downstream of it has ever run.
+
+`/stable/profile` is available on the free tier, so one symbol at a time
+works where the whole market does not:
+
+    ARGUS_UNIVERSE_SYMBOLS=MLSS,SLS,HIVE,ALXO,QBTS,AAPL,MSFT
+
+Unset, this file behaves exactly as it did before the variable existed.
+Set, it takes `build_intervals_from_symbols` instead — a per-ticker path
+that exists for testing and says so in the version label it produces
+(`universe-<date>-seed7-<checksum>`), in the stored definition, and in
+every line it logs. **A seeded universe is a test fixture, not a
+universe**: it covers the names that were typed in, so a statistic
+computed over one describes those names and not the market.
+
+Everything else is unchanged and deliberately so — the 14:00 UTC timing
+check applies to a seeded build exactly as it does to a real one. A
+seeded universe the next ingestion cannot see is just as useless as a
+real one nobody can see, and it fails the same way rather than being
+special-cased into looking healthy.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 
 from sqlalchemy import Engine
@@ -84,6 +112,7 @@ from core.universe import (
     UniverseRepository,
     bar_date_bounds,
     build_intervals_from_fetch,
+    build_intervals_from_symbols,
     construct_version,
     intervals_covering,
 )
@@ -95,9 +124,40 @@ from infra.deploy.cli import refuse_arguments
 from infra.deploy.config import DeploymentProfile, profile_for
 from infra.observability.logging import configure_logging, get_logger
 
-__all__ = ["UniverseBuildResult", "build_universe_version", "main"]
+__all__ = [
+    "SEED_SYMBOLS_ENV_VAR",
+    "UniverseBuildResult",
+    "build_universe_version",
+    "main",
+    "seed_symbols_from_environment",
+]
 
 _log = get_logger("argus.deploy.universe")
+
+#: Optional. Set it to seed a small universe from an explicit symbol
+#: list; unset, the whole-market path runs unchanged. Named and read the
+#: way `infra/deploy/backfill.py` reads `ARGUS_BACKFILL_SYMBOLS`, since an
+#: operator who has met one should not have to learn a second convention.
+SEED_SYMBOLS_ENV_VAR = "ARGUS_UNIVERSE_SYMBOLS"
+
+
+def seed_symbols_from_environment(env: dict[str, str] | None = None) -> tuple[str, ...]:
+    """The seed symbol list, or empty for the whole-market path.
+
+    Empty is the default and means "behave exactly as before", so an
+    unset variable, an empty one, and one holding nothing but separators
+    are all the same answer. Duplicates are collapsed — asking for AAPL
+    twice is a typo, and paying for the request twice to build the same
+    interval twice serves nobody — while the operator's order is kept, so
+    the log reads back in the order it was typed.
+    """
+    source = env if env is not None else dict(os.environ)
+    seen: dict[str, None] = {}
+    for part in source.get(SEED_SYMBOLS_ENV_VAR, "").split(","):
+        symbol = part.strip().upper()
+        if symbol:
+            seen.setdefault(symbol, None)
+    return tuple(seen)
 
 
 class UniverseBuildResult:
@@ -149,6 +209,13 @@ class UniverseBuildResult:
             "members_for_next_ingestion": self.members_for_next_ingestion,
             "usable": self.usable,
             **self.construction.admission.summary(),
+            # Only on a seeded build, and then in every line: which
+            # symbols were asked for, which the provider did not know,
+            # and that no delisted sweep ran. A seeded universe that
+            # logged like a real one is the confusion this prevents.
+            **(
+                self.construction.seed.summary() if self.construction.seed is not None else {}
+            ),
         }
 
 
@@ -159,6 +226,7 @@ async def build_universe_version(
     now: datetime | None = None,
     description: str | None = None,
     profile: DeploymentProfile | None = None,
+    seed_symbols: Sequence[str] | None = None,
 ) -> UniverseBuildResult:
     """Fetch listings, build intervals, and persist one universe version.
 
@@ -175,9 +243,14 @@ async def build_universe_version(
     date and is only meaningful once price history exists — see
     `core/universe/README.md` on why a cold system cannot honestly claim
     a security was listed before it first saw it.
+
+    `seed_symbols`, when non-empty, takes the per-ticker seed path
+    instead — see the module docstring on why that exists and what it
+    costs. Empty or None is the whole-market path, unchanged.
     """
     (profile or profile_for()).validate()
     observed_at = now or datetime.now(UTC)
+    seed = tuple(seed_symbols or ())
 
     with engine.begin() as connection:
         # Price history where there is any. Without it every currently
@@ -193,17 +266,32 @@ async def build_universe_version(
             "event": "universe_build_starting",
             "observed_at": observed_at.isoformat(),
             "securities_with_price_history": len(first_bars),
+            "seed_symbols": list(seed),
+            "whole_market": not seed,
         },
     )
 
     async with FmpClient() as client:
         with engine.begin() as connection:
-            construction = await build_intervals_from_fetch(
-                FmpFetcher(client),
-                SecurityIdentityResolver(connection),
-                observed_at=observed_at,
-                first_bar_dates=first_bars,
-                last_bar_dates=last_bars,
+            fetcher = FmpFetcher(client)
+            resolver = SecurityIdentityResolver(connection)
+            construction = (
+                await build_intervals_from_symbols(
+                    fetcher,
+                    resolver,
+                    seed,
+                    observed_at=observed_at,
+                    first_bar_dates=first_bars,
+                    last_bar_dates=last_bars,
+                )
+                if seed
+                else await build_intervals_from_fetch(
+                    fetcher,
+                    resolver,
+                    observed_at=observed_at,
+                    first_bar_dates=first_bars,
+                    last_bar_dates=last_bars,
+                )
             )
 
     with engine.begin() as connection:
@@ -211,7 +299,7 @@ async def build_universe_version(
             construction,
             UniverseRepository(connection),
             as_of=as_of or observed_at,
-            description=description or "Built by infra.deploy.universe",
+            description=description or _default_description(construction),
         )
 
     next_as_of = _next_ingestion_as_of(observed_at)
@@ -222,6 +310,24 @@ async def build_universe_version(
         construction=construction,
         next_ingestion_as_of=next_as_of,
         members_for_next_ingestion=covering,
+    )
+
+
+def _default_description(construction: UniverseConstruction) -> str:
+    """What the version says about itself when nobody supplied a description.
+
+    The seed case spells out that this is a test fixture, in the field a
+    person reads when they are deciding whether to trust a number
+    computed over it.
+    """
+    seed = construction.seed
+    if seed is None:
+        return "Built by infra.deploy.universe"
+    return (
+        f"SEED universe built by infra.deploy.universe from {len(seed.requested)} "
+        "explicit symbols, one /stable/profile call each. A test fixture, not the "
+        "market: no stock-list sweep, no delisted sweep, so every figure derived "
+        "from it describes these symbols only."
     )
 
 
@@ -252,10 +358,15 @@ def main(argv: list[str] | None = None) -> int:
     refuse_arguments("infra.deploy.universe", argv)
     configure_logging()
     profile = profile_for()
+    # Configuration comes from the environment, not argv — `refuse_arguments`
+    # stays, and this reads the same way `backfill.py` reads its own.
+    seed_symbols = seed_symbols_from_environment()
 
     try:
         engine = create_db_engine(pool_pre_ping=True, pool_size=5, max_overflow=0)
-        result = asyncio.run(build_universe_version(engine, profile=profile))
+        result = asyncio.run(
+            build_universe_version(engine, profile=profile, seed_symbols=seed_symbols)
+        )
     except Exception as error:  # noqa: BLE001 - the exit code is the signal
         _log.error(
             "universe build failed",

@@ -189,3 +189,18 @@ def default_version_label(as_of: datetime, checksum: str) -> str:
     distinguishable without a counter.
     """
     return f"universe-{as_of.astimezone(UTC).date().isoformat()}-{checksum[:12]}"
+
+
+def seed_version_label(as_of: datetime, checksum: str, symbol_count: int) -> str:
+    """The label for a universe seeded from an explicit symbol list.
+
+    `seed<n>` sits in the middle of the otherwise-identical label because
+    this string is what an operator copies into `ARGUS_UNIVERSE_VERSION`
+    and what every later reader of a scan, a score or a track record sees
+    first. A seeded universe covers a handful of hand-picked names, so
+    every statistic computed over one is a statement about those names
+    rather than about the market — and that has to be unmistakable from
+    the label alone, not discoverable by opening the version's definition.
+    """
+    date_part = as_of.astimezone(UTC).date().isoformat()
+    return f"universe-{date_part}-seed{symbol_count}-{checksum[:12]}"

@@ -29,6 +29,7 @@ approach.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from uuid import UUID
@@ -48,15 +49,55 @@ from core.universe.repository import (
     UniverseRepository,
     default_version_label,
     membership_checksum,
+    seed_version_label,
 )
 from data.canonical_model.exchanges import CanonicalExchange, normalize_exchange, normalize_symbol
 from data.normalization.identity import SecurityIdentityResolver
+from data.provider_adapters.fmp.errors import FmpError
 from data.provider_adapters.fmp.fetchers import FmpFetcher
 from data.provider_adapters.fmp.models import DelistedSecurity, SecurityListing
 from infra.db.schema.canonical import canonical_ohlcv
 
 #: The venues ARGUS's universe is drawn from.
 UNIVERSE_EXCHANGE_NAMES: tuple[str, ...] = ("NYSE", "NASDAQ")
+
+
+@dataclass(slots=True)
+class SeedReport:
+    """What a seeded construction asked for, and what the provider gave back.
+
+    Present only on the seed path, and its presence is what marks a
+    construction as seeded everywhere downstream — the label, the stored
+    definition and the build log all key off it rather than off a flag
+    somebody has to remember to pass twice.
+    """
+
+    #: Symbols the operator asked for, in the order given.
+    requested: tuple[str, ...] = ()
+    #: Symbols the provider returned a profile row for.
+    profiled: list[str] = field(default_factory=list)
+    #: Symbols the provider knows nothing about — a typo, a delisted
+    #: ticker, or a venue FMP does not carry. Named rather than counted:
+    #: with twenty hand-typed symbols, *which* one was wrong is the whole
+    #: question.
+    not_found: list[str] = field(default_factory=list)
+    #: Symbols whose fetch failed, by symbol, with the failure named. One
+    #: bad symbol must not cost the other nineteen.
+    failed: dict[str, str] = field(default_factory=dict)
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "seed_requested": len(self.requested),
+            "seed_symbols": list(self.requested),
+            "seed_profiled": len(self.profiled),
+            "seed_not_found": sorted(self.not_found),
+            "seed_failed": dict(sorted(self.failed.items())),
+            # Stated in every summary rather than implied by its absence:
+            # this is the evidence difference between a seeded universe
+            # and a real one, and it is the kind of caveat that gets lost
+            # the moment it is only written in a docstring.
+            "seed_delisted_sweep": False,
+        }
 
 
 @dataclass(slots=True)
@@ -68,6 +109,9 @@ class UniverseConstruction:
     #: When the provider responses were observed. Becomes the fallback
     #: `listed_from` for securities with no other evidence.
     observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: Set only by `build_intervals_from_symbols`. None means this is a
+    #: real, whole-market construction.
+    seed: SeedReport | None = None
 
     @property
     def security_count(self) -> int:
@@ -122,6 +166,90 @@ async def build_intervals_from_fetch(
         )
         if observation is not None:
             observations.append(observation)
+
+    construction.intervals = build_intervals(
+        observations,
+        observed_at=observed_at,
+        first_bar_dates=first_bar_dates,
+        last_bar_dates=last_bar_dates,
+    )
+    return construction
+
+
+async def build_intervals_from_symbols(
+    fetcher: FmpFetcher,
+    resolver: SecurityIdentityResolver,
+    symbols: Sequence[str],
+    *,
+    observed_at: datetime | None = None,
+    first_bar_dates: dict[UUID, date] | None = None,
+    last_bar_dates: dict[UUID, date] | None = None,
+    register_unknown: bool = True,
+) -> UniverseConstruction:
+    """Build intervals from an explicit symbol list, one profile per symbol.
+
+    **This is a test fixture, not a universe.** It exists for one reason:
+    `/stable/stock-list` is paywalled below FMP's paid tiers, so on a free
+    key `build_intervals_from_fetch` cannot return a single row — which is
+    how ARGUS spent its whole existence unable to ingest one real bar.
+    `/stable/profile` is available on the free tier, so a hand-picked
+    handful of symbols can be taken end to end for the first time.
+
+    It is deliberately a *sibling* of `build_intervals_from_fetch` rather
+    than an option on it. That function's docstring states the rule it
+    keeps — "no per-ticker calls, no hardcoded symbols, no assumed count"
+    — and that rule is right for the production path and stays true of it.
+    Per-ticker calls and a hardcoded list are exactly what this does, so
+    it says so in its name, in its report, and in the version label it
+    ends up producing.
+
+    **Two evidence caveats, both real, neither hidden:**
+
+    *No delisted sweep.* `fetch_delisted_companies` is not called —
+    it is very likely gated on the free tier too, and calling it would
+    reintroduce the paywall this path exists to route around. So a symbol
+    that is in fact delisted is dated from `IntervalEvidence.FIRST_OBSERVED`
+    rather than from the delisted feed. `check_valid_asset_identity`
+    already understands that weaker evidence and records it; `SeedReport`
+    states it in every summary so nobody has to infer it.
+
+    *No IPO date, though the payload carries one.* A profile row includes
+    `ipoDate`, which would be better evidence than the observation
+    instant. Wiring it in means changing `_observe_listing`, which the
+    whole-market path shares, so it is kept in the record's `raw` and left
+    unused here rather than changed underneath the path that matters.
+
+    Everything else is the ordinary path: `_observe_listing` unchanged, so
+    admission rules, exclusion reporting and identity registration behave
+    exactly as they do for the whole market, and `build_intervals`
+    unchanged after it.
+    """
+    observed_at = observed_at or datetime.now(UTC)
+    report = SeedReport(requested=tuple(symbols))
+    construction = UniverseConstruction(observed_at=observed_at, seed=report)
+
+    observations: list[ListingObservation] = []
+    for symbol in symbols:
+        try:
+            profile = await fetcher.fetch_company_profile(symbol)
+        except FmpError as error:
+            # Named and survived rather than raised. Twenty symbols typed
+            # by hand will contain a mistake, and losing the other
+            # nineteen to it is a worse outcome than a short universe.
+            report.failed[symbol] = f"{type(error).__name__}: {error}"
+            continue
+
+        if not profile.records:
+            report.not_found.append(symbol)
+            continue
+
+        for listing in profile.records:
+            report.profiled.append(listing.symbol)
+            observation = _observe_listing(
+                listing, construction.admission, resolver, observed_at, register_unknown
+            )
+            if observation is not None:
+                observations.append(observation)
 
     construction.intervals = build_intervals(
         observations,
@@ -263,9 +391,15 @@ def construct_version(
     if existing is not None:
         return existing
 
+    seed = construction.seed
     definition = {
         "exchanges": list(UNIVERSE_EXCHANGE_NAMES),
-        "source": {"provider": "fmp", "endpoints": ["stock_list", "delisted_companies"]},
+        "source": {
+            "provider": "fmp",
+            "endpoints": (
+                ["company_profile"] if seed else ["stock_list", "delisted_companies"]
+            ),
+        },
         "observed_at": construction.observed_at.isoformat(),
         "membership_checksum": checksum,
         "member_count": len(members),
@@ -275,9 +409,22 @@ def construct_version(
         # diagnosable from the stored record.
         "admission": construction.admission.summary(),
     }
+    if seed is not None:
+        # Recorded in the version itself, because a seeded universe is a
+        # test fixture and every statistic computed over one is a
+        # statement about twenty hand-picked names rather than about the
+        # market. A reader six months from now meets this row, not the
+        # command that produced it.
+        definition["seed"] = seed.summary()
+
+    label = (
+        seed_version_label(as_of, checksum, len(seed.requested))
+        if seed is not None
+        else default_version_label(as_of, checksum)
+    )
 
     version_id = repository.create_version(
-        version_label=default_version_label(as_of, checksum),
+        version_label=label,
         as_of=as_of,
         definition=definition,
         description=description,
@@ -286,7 +433,7 @@ def construct_version(
 
     return StoredUniverseVersion(
         id=version_id,
-        version_label=default_version_label(as_of, checksum),
+        version_label=label,
         as_of_date=as_of,
         member_count=len(members),
         reused=False,

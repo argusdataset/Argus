@@ -39,7 +39,11 @@ from sqlalchemy import Engine, func, select
 from data.provider_adapters.fmp.models import DelistedSecurity, FetchProvenance, SecurityListing
 from infra.db.schema.identity import universe_membership, universe_version
 from infra.deploy.migrate import upgrade_to_head
-from infra.deploy.universe import build_universe_version
+from infra.deploy.universe import (
+    SEED_SYMBOLS_ENV_VAR,
+    build_universe_version,
+    seed_symbols_from_environment,
+)
 
 #: The next ingestion's cutoff is `session_close(scan_date) + 17h`, and
 #: `scan_date` is the last session already due. For a build on Wednesday
@@ -290,3 +294,179 @@ def test_delisted_securities_are_still_members_of_an_earlier_universe(at_head: E
     # And it is excluded from the current version, which is the other half
     # of the same property.
     assert result.version.member_count == 1
+
+
+# --------------------------------------------------------------------------
+# Seeding, for a free FMP key that cannot reach stock-list at all
+# --------------------------------------------------------------------------
+#
+# The run that prompted this got HTTP 402 from `/stable/stock-list` — the
+# very first call `build_intervals_from_fetch` makes — so on a free key
+# `FakeListingSource.fetch_stock_list` above stands in for an endpoint
+# that returns nothing at all. `ARGUS_UNIVERSE_SYMBOLS` switches this
+# entrypoint to the per-symbol profile path instead. The two things worth
+# asserting at this level are that the switch is real (the paywalled
+# methods are not called) and that nothing else about the entrypoint is
+# special-cased for it.
+
+
+class FakeProfileSource(FakeListingSource):
+    """The seed path's one endpoint, over the same call recorder.
+
+    Inherits `fetch_stock_list` and `fetch_delisted_companies` rather than
+    dropping them, so a seed build that wrongly called either records the
+    call and fails the assertion instead of raising an AttributeError
+    that could be mistaken for an unrelated wiring problem.
+    """
+
+    def __init__(self, *, known: tuple[str, ...], listed: tuple[str, ...] = ()) -> None:
+        super().__init__(listed=listed)
+        self.known = known
+
+    async def fetch_company_profile(self, symbol: str):
+        self.calls.append(f"company_profile:{symbol}")
+        if symbol not in self.known:
+            return _Result([])
+        return _Result(
+            [
+                SecurityListing(
+                    provenance=_provenance("company_profile"),
+                    symbol=symbol,
+                    name=f"{symbol} Corp.",
+                    # The profile payload's shape: long name under
+                    # `exchangeFullName`, short under plain `exchange`.
+                    exchange="NASDAQ Global Select",
+                    exchange_short_name="NASDAQ",
+                    security_type="stock",
+                )
+            ]
+        )
+
+
+def _build_seeded(engine: Engine, source, *, symbols, now: datetime, monkeypatch):
+    import contextlib
+
+    import infra.deploy.universe as module
+
+    @contextlib.asynccontextmanager
+    async def _client():
+        yield object()
+
+    monkeypatch.setattr(module, "FmpClient", lambda *a, **k: _client())
+    monkeypatch.setattr(module, "FmpFetcher", lambda _client: source)
+
+    from infra.deploy.config import PROFILES
+    from packages.config.environment import Environment
+
+    return asyncio.run(
+        build_universe_version(
+            engine,
+            now=now,
+            profile=PROFILES[Environment.DEVELOPMENT],
+            seed_symbols=symbols,
+        )
+    )
+
+
+def test_a_seeded_build_calls_only_the_profile_endpoint(at_head: Engine, monkeypatch):
+    """The free-tier claim, at the entrypoint rather than in the builder.
+
+    One profile call per symbol, and neither paywalled endpoint touched.
+    """
+    source = FakeProfileSource(known=("AAA", "BBB"))
+
+    result = _build_seeded(
+        at_head, source, symbols=("AAA", "BBB"), now=BEFORE_THE_CUTOFF, monkeypatch=monkeypatch
+    )
+
+    assert source.calls == ["company_profile:AAA", "company_profile:BBB"]
+    assert "stock_list" not in source.calls
+    assert "delisted_companies" not in source.calls
+    assert result.version.member_count == 2
+
+
+def test_an_unset_variable_leaves_the_whole_market_path_exactly_as_it_was(
+    at_head: Engine, monkeypatch
+):
+    """The default has to be untouched, and the test has to say so.
+
+    `seed_symbols_from_environment` returns an empty tuple for an unset,
+    empty, or separators-only variable, and an empty tuple takes the
+    stock-list path — the same two calls, in the same order, as before
+    the seed path existed.
+    """
+    monkeypatch.delenv(SEED_SYMBOLS_ENV_VAR, raising=False)
+    assert seed_symbols_from_environment() == ()
+
+    source = FakeProfileSource(known=("AAA",), listed=("AAA", "BBB"))
+    result = _build_seeded(
+        at_head,
+        source,
+        symbols=seed_symbols_from_environment(),
+        now=BEFORE_THE_CUTOFF,
+        monkeypatch=monkeypatch,
+    )
+
+    assert source.calls == ["stock_list", "delisted_companies"]
+    assert result.construction.seed is None
+    assert "seed" not in result.version.version_label
+    assert result.version.member_count == 2
+
+
+def test_the_variable_is_read_the_way_backfill_reads_its_own(monkeypatch):
+    """Whitespace, case and empty entries, plus duplicates collapsed."""
+    monkeypatch.setenv(SEED_SYMBOLS_ENV_VAR, " aapl , MSFT,, aapl ,hive ")
+
+    assert seed_symbols_from_environment() == ("AAPL", "MSFT", "HIVE")
+
+
+def test_the_timing_check_still_fires_on_a_seeded_build(at_head: Engine, monkeypatch):
+    """Not special-cased, deliberately.
+
+    A seeded universe the next ingestion cannot see is exactly as useless
+    as a real one it cannot see, and an exit 0 here would be the same
+    silent `universe_size: 0` the whole-market path refuses to produce.
+    """
+    result = _build_seeded(
+        at_head,
+        FakeProfileSource(known=("AAA", "BBB")),
+        symbols=("AAA", "BBB"),
+        now=AFTER_THE_CUTOFF,
+        monkeypatch=monkeypatch,
+    )
+
+    assert result.version.member_count == 2
+    assert result.members_for_next_ingestion == 0
+    assert result.usable is False
+
+
+def test_a_seeded_build_is_unmistakable_in_the_label_and_the_log(at_head: Engine, monkeypatch):
+    """Everything downstream reads one of these two."""
+    result = _build_seeded(
+        at_head,
+        FakeProfileSource(known=("AAA", "BBB")),
+        symbols=("AAA", "BBB", "TYPO"),
+        now=BEFORE_THE_CUTOFF,
+        monkeypatch=monkeypatch,
+    )
+    summary = result.as_dict()
+
+    assert "seed3" in result.version.version_label
+    assert summary["seed_requested"] == 3
+    assert summary["seed_symbols"] == ["AAA", "BBB", "TYPO"]
+    assert summary["seed_not_found"] == ["TYPO"]
+    assert summary["seed_delisted_sweep"] is False
+    # And the typo cost one symbol rather than the run.
+    assert result.version.member_count == 2
+
+
+def test_a_whole_market_build_carries_no_seed_fields_in_its_log(at_head: Engine, monkeypatch):
+    """A marker that appears on every build marks nothing."""
+    result = _build(
+        at_head,
+        FakeListingSource(listed=("AAA",)),
+        now=BEFORE_THE_CUTOFF,
+        monkeypatch=monkeypatch,
+    )
+
+    assert not any(key.startswith("seed_") for key in result.as_dict())

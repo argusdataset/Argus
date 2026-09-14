@@ -7,6 +7,8 @@ from decimal import Decimal
 
 import pytest
 
+from data.provider_adapters.fmp.errors import FmpProviderError
+from data.provider_adapters.fmp.fetchers import PROFILE_RESOLUTION_KEY
 from data.provider_adapters.fmp.models import CorporateActionKind, EmptyReason
 from tests.unit.fmp.conftest import fixture_handler, load_fixture
 
@@ -43,6 +45,103 @@ async def test_unmodelled_fields_are_preserved_not_dropped(make_fetcher):
 
     apple = next(record for record in result.records if record.symbol == "AAPL")
     assert apple.raw["price"] == 189.5
+
+
+# --- /stable/profile, the one listing endpoint a free key can reach ------
+#
+# FMP's documentation does not pin this payload's field names, and the
+# ones it does return are *not* stock-list's: the long venue name arrives
+# under `exchangeFullName` and the short one under plain `exchange`,
+# where stock-list uses `exchange` and `exchangeShortName`. A wrong guess
+# would not error — the venue would fall to UNKNOWN and the security
+# would be excluded as if it were listed somewhere ARGUS does not cover,
+# which sends the reader looking at exchanges instead of at field names.
+
+
+PROFILE_ROW = {
+    "symbol": "AAPL",
+    "companyName": "Apple Inc.",
+    "exchangeFullName": "NASDAQ Global Select",
+    "exchange": "NASDAQ",
+    "ipoDate": "1980-12-12",
+}
+
+
+async def test_a_profile_becomes_a_listing_with_both_venue_labels(make_fetcher):
+    fetcher, client = make_fetcher(fixture_handler({"/profile": [PROFILE_ROW]}))
+    async with client:
+        result = await fetcher.fetch_company_profile("AAPL")
+
+    listing = result.records[0]
+    assert listing.symbol == "AAPL"
+    assert listing.name == "Apple Inc."
+    assert listing.exchange == "NASDAQ Global Select"
+    assert listing.exchange_short_name == "NASDAQ"
+
+
+async def test_the_stock_list_spelling_also_resolves(make_fetcher):
+    """The aliases cover both shapes, so either payload works here."""
+    row = {
+        "symbol": "GE",
+        "name": "General Electric",
+        "exchange": "New York Stock Exchange",
+        "exchangeShortName": "NYSE",
+    }
+    fetcher, client = make_fetcher(fixture_handler({"/profile": [row]}))
+    async with client:
+        result = await fetcher.fetch_company_profile("GE")
+
+    listing = result.records[0]
+    assert listing.exchange == "New York Stock Exchange"
+    assert listing.exchange_short_name == "NYSE"
+
+
+async def test_the_record_says_which_spelling_resolved(make_fetcher):
+    """So an unexpected payload is readable from the record itself."""
+    fetcher, client = make_fetcher(fixture_handler({"/profile": [PROFILE_ROW]}))
+    async with client:
+        result = await fetcher.fetch_company_profile("AAPL")
+
+    resolution = result.records[0].raw[PROFILE_RESOLUTION_KEY]
+    assert resolution["resolved"]["exchange"] == "exchangeFullName"
+    assert resolution["resolved"]["exchange_short_name"] == "exchange"
+    assert resolution["unresolved"] == ["security_type"]
+
+
+async def test_an_unrecognisable_symbol_field_is_a_named_failure(make_fetcher):
+    """Not a listing with an empty symbol, which would be excluded
+    downstream as an unrecognised venue — the wrong problem entirely."""
+    fetcher, client = make_fetcher(fixture_handler({"/profile": [{"Symbol": "AAPL"}]}))
+    async with client:
+        with pytest.raises(FmpProviderError) as failure:
+            await fetcher.fetch_company_profile("AAPL")
+
+    assert "symbol, ticker" in str(failure.value)
+    assert "Symbol" in str(failure.value)
+
+
+async def test_a_symbol_fmp_does_not_carry_returns_no_records(make_fetcher):
+    """FMP answers an unknown ticker with `[]` rather than a 404."""
+    fetcher, client = make_fetcher(fixture_handler({"/profile": []}))
+    async with client:
+        result = await fetcher.fetch_company_profile("NOSUCHTICKER")
+
+    assert result.records == []
+    assert result.empty_reason is EmptyReason.NO_DATA_RETURNED
+
+
+async def test_the_profile_keeps_fields_the_adapter_does_not_model(make_fetcher):
+    """`ipoDate` is better listing evidence than the observation instant.
+
+    It is kept rather than used: consuming it means changing
+    `_observe_listing`, which the whole-market path shares. See
+    `build_intervals_from_symbols` on why that trade was refused.
+    """
+    fetcher, client = make_fetcher(fixture_handler({"/profile": [PROFILE_ROW]}))
+    async with client:
+        result = await fetcher.fetch_company_profile("AAPL")
+
+    assert result.records[0].raw["ipoDate"] == "1980-12-12"
 
 
 async def test_parses_daily_bars_with_raw_and_adjusted_prices(make_fetcher):
