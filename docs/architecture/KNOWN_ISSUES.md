@@ -1238,6 +1238,121 @@ Fixed in commit `719a3e5`.
 
 ---
 
+## J. First live run against production (2026-09-13/14)
+
+The first time anything in this project was pointed at FMP with a real
+key, from a temporary Railway service. Two findings, both from that one
+run: one security, one structural.
+
+### J1. The FMP API key was written to Railway's logs in plaintext — **RESOLVED**
+
+The deploy log contained, verbatim:
+
+```
+HTTP Request: GET https://financialmodelingprep.com/stable/stock-list?apikey=<the real key>
+```
+
+`data/provider_adapters/fmp/client.py` is careful with that credential —
+resolved once through `SecretsProvider`, held only in memory, never put
+on a config object, and `_redact`ed out of its own error messages. None
+of that reaches a line **another library** emits. `httpx` logs every
+request at INFO and passes the URL as a format argument, so the key never
+touched anything ARGUS builds, scrubs or formats.
+
+`infra.observability.logging.scrub` could not have caught it either: it
+decides by *field name*, and here the credential is inside a value.
+
+**Severity was low only by accident.** The key in the logs was a
+throwaway free-tier one (rotate it regardless — it is in the log store).
+The same code path with the planned $149/mo Ultimate key would have put a
+paid credential into Railway's log store and into anything those logs are
+ever shipped to. Fixed before that key is set, which was the point.
+
+**The fix.** `CredentialQueryFilter`, installed on the handler in
+`configure_logging`. At the handler rather than on a logger, because a
+filter on a logger only sees records logged *to* it — `callHandlers`
+walks ancestors for their handlers and never re-applies their filters, so
+a logger-level filter would never have seen an `httpx` record at all. A
+query parameter whose name is credential-shaped keeps its name and loses
+its value, with the names taken from `CREDENTIAL_KEY_PARTS` so one word
+list still governs the field scrubber, the static AST scan and this.
+
+Raising `httpx` to WARNING was the obvious alternative and is worse: that
+INFO line is exactly how J2 below was diagnosed. Silencing it would have
+removed the evidence along with the leak. The line still ships, with
+`apikey=[redacted]`.
+
+Regression-tested through a real `httpx` request rather than a
+hand-built record — the bug was in what the library does, so a synthetic
+record would have proved the wrong thing.
+
+Fixed in commit `d767ff8`.
+
+### J2. No universe could be built at all on a free FMP key — **RESOLVED**
+
+The same run failed on its actual job:
+
+```
+argus.deploy.universe  universe_build_starting   securities_with_price_history=0
+httpx                  GET /stable/stock-list  →  "HTTP/1.1 402 Payment Required"
+argus.deploy.universe  universe_build_failed
+```
+
+`/stable/stock-list` is restricted to FMP's paid tiers. It is the first
+call `build_intervals_from_fetch` makes, so on a free key the whole
+pipeline was blocked behind one request:
+
+- no universe version could be built, and `ARGUS_UNIVERSE_VERSION` gates
+  both `ingestion` and `scanner` — each exits 2 without it;
+- no identities were minted, since Module 05's resolver is invoked from
+  inside that fetch loop;
+- so the targeted backfill could not run either —
+  `infra/deploy/backfill.py::_identities_for` uses `try_resolve`, which
+  resolves existing identities and never mints new ones, and reports a
+  symbol nobody registered as an operator typo.
+
+This is the mechanical reason ARGUS had been fully built and deployed —
+eleven healthy Railway services, twenty-seven modules — and had **never
+ingested a single bar, detected a single candidate, or produced a single
+score**.
+
+**The fix.** `/stable/profile` is available on the free tier, so
+`core/universe/builder.py::build_intervals_from_symbols` builds a
+universe from an explicit symbol list, one profile call per symbol,
+selected by `ARGUS_UNIVERSE_SYMBOLS`. Unset, the whole-market path is
+byte-for-byte unchanged.
+
+It is a **sibling** of `build_intervals_from_fetch`, not an option on it.
+That function documents the rule the production path keeps — "no
+per-ticker calls, no hardcoded symbols, no assumed count" — and a seed
+path is the exact opposite of all three, so it is visible in the name of
+what gets called rather than hidden in an argument. Everything after the
+fetch is the shared, unchanged path: `_observe_listing`, admission,
+exclusion reporting, identity registration, `build_intervals`.
+
+**A seeded universe is a test fixture and every artefact says so.** The
+label carries `seed<n>` (`universe-2026-09-14-seed7-<checksum>`), the
+stored definition records which symbols were asked for, which FMP did not
+know, and that no delisted sweep ran; the build log carries the same. A
+statistic computed over one describes those symbols, not the market, and
+that must not be discoverable only by opening the version row.
+
+Two evidence caveats are recorded rather than hidden: without the
+delisted sweep a delisted symbol is dated `FIRST_OBSERVED` rather than
+from the delisted feed, and the profile payload's `ipoDate` — better
+evidence than the observation instant — is deliberately left unused,
+because consuming it means changing `_observe_listing`, which the
+whole-market path shares.
+
+The 14:00 UTC timing check is **not** special-cased for seeded builds. A
+seeded universe the next ingestion cannot see is exactly as useless as a
+real one it cannot see, and it fails the same way rather than being
+allowed to look healthy.
+
+Fixed in commit `2478fe3`.
+
+---
+
 ## Summary
 
 | Severity | Open | Deferred | Closed |
@@ -1245,7 +1360,7 @@ Fixed in commit `719a3e5`.
 | HIGH | A1, A2 (Module 11 copy), C1, C3 | — | — |
 | MEDIUM | A2 (Module 16 copy), A3, A4, B1, C4, C5, C7 | D1 | — |
 | LOW | C6, C8, F1 | D2, D3 | — |
-| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3, H1-H8, I1 |
+| — | — | — | C2, E1, E2, E3, E4, E5, E6, G1, G2, G3, H1-H8, I1, J1, J2 |
 
 **The H series was found by a pre-key audit at `d8d5337`** and none of it
 appeared in any module report. Two patterns run through it and are worth
